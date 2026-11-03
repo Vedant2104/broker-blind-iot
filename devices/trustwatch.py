@@ -8,7 +8,6 @@ changes or a misbehaving directory/log.
 from __future__ import annotations
 
 import threading
-import time
 from typing import TYPE_CHECKING, Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -32,6 +31,11 @@ class TrustWatch:
         self._peer_keys: dict[str, Ed25519PublicKey] = {}
         self._verifier: PeerVerifier | None = None
         self._last_problem: str | None = None
+        self._wake = threading.Event()
+
+    def poke(self) -> None:
+        """Re-check the directory now instead of at the next interval."""
+        self._wake.set()
 
     @property
     def trusted(self) -> bool:
@@ -40,6 +44,9 @@ class TrustWatch:
     def peer_key(self, device_id: str) -> Ed25519PublicKey | None:
         """Signing key of a peer that passed every check (root, log, pin, not revoked)."""
         return self._peer_keys.get(device_id)
+
+    def trusted_peers(self) -> list[str]:
+        return sorted(d for d, p in self.peers.items() if p.get("status") == "trusted")
 
     def kdc_key(self) -> Ed25519PublicKey | None:
         try:
@@ -60,7 +67,8 @@ class TrustWatch:
                 if problem != self._last_problem:
                     self.d.log.info(f"trust check: {problem}")
                     self._last_problem = problem
-            time.sleep(TRUSTED_INTERVAL if self.trusted else PENDING_INTERVAL)
+            self._wake.wait(TRUSTED_INTERVAL if self.trusted else PENDING_INTERVAL)
+            self._wake.clear()
 
     def _verifier_or_build(self) -> PeerVerifier:
         if self._verifier is None:

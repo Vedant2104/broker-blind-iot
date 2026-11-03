@@ -6,7 +6,16 @@ RUN npm ci --no-audit --no-fund
 COPY dashboard/web/ ./
 RUN npm run build
 
-# Stage 2: one image for all Python components (CLI, devices, proxy, dashboard, ...).
+# Stage 2: the MLS sidecar (OpenMLS), as a static musl binary.
+FROM rust:1.91-alpine AS mls
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY mls-sidecar/Cargo.toml mls-sidecar/Cargo.lock ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release --locked && rm -rf src
+COPY mls-sidecar/src src
+RUN touch src/main.rs && cargo build --release --locked && strip target/release/bbiot-mls
+
+# Stage 3: one image for all Python components (CLI, devices, proxy, dashboard, ...).
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -32,6 +41,7 @@ RUN pip install --no-cache-dir .
 
 COPY config config
 COPY --from=web /web/dist /app/dashboard/web/dist
+COPY --from=mls /src/target/release/bbiot-mls /usr/local/bin/bbiot-mls
 
 ENTRYPOINT ["bbiot"]
 CMD ["--help"]

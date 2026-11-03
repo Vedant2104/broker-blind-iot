@@ -29,6 +29,7 @@ export default function App() {
         onReset={() => run("demo.reset")}
         onVerifyLog={() => run("log.verify")}
         onSecurity={(mode) => run(`security.${mode}`)}
+        onKeymode={(mode) => run(`keymode.${mode}`)}
       />
 
       <nav className="flex gap-1 border-b border-line bg-panel px-4">

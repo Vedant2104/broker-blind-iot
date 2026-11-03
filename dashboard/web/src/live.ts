@@ -48,6 +48,7 @@ export type AttackResult = {
   reason: string;
   command: string;
   security?: string;
+  keymode?: string;
 };
 export type ConsoleLine = { run: string; action: string; line: string };
 

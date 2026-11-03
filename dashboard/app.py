@@ -57,7 +57,8 @@ class Live:
             "kdc": "unknown",
         }
         self.log_size: int | None = None
-        self.epoch: int | None = None
+        self.epoch: int | None = None  # KDC epoch
+        self.shown_epoch: int | None = None
         self._queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ids = itertools.count(1)
@@ -96,12 +97,30 @@ class Live:
         modes.discard(None)
         return modes.pop() if len(modes) == 1 else ("mixed" if modes else "unknown")
 
+    def display_epoch(self) -> int | None:
+        """KDC epoch in centralized mode; the MLS epoch (as the devices report it) in
+        decentralized mode."""
+        if self.keymode() != "decentralized":
+            return self.epoch
+        epochs = [
+            ((d.get("groups") or {}).get("decentralized") or {}).get("epoch")
+            for d in self.devices.values()
+            if d.get("reachable")
+        ]
+        epochs = [e for e in epochs if e is not None]
+        return max(epochs) if epochs else None
+
+    def keymode(self) -> str:
+        modes = {d.get("keymode") for d in self.devices.values() if d.get("reachable")}
+        modes.discard(None)
+        return modes.pop() if len(modes) == 1 else ("mixed" if modes else "centralized")
+
     def snapshot(self) -> dict:
         return {
             "type": "snapshot",
             "security": self.security(),
-            "keymode": "centralized",
-            "epoch": self.epoch,
+            "keymode": self.keymode(),
+            "epoch": self.display_epoch(),
             "log_size": self.log_size,
             "services": self.services,
             "devices": self.devices,
@@ -226,9 +245,11 @@ def _poll_trust_services(cfg: Config, live: Live) -> None:
     try:
         st = remote.kdc_status(cfg)
         live.services["kdc"] = "up"
-        if st["epoch"] != live.epoch:
-            live.epoch = st["epoch"]
-            live.push({"type": "epoch", "epoch": st["epoch"]})
+        live.epoch = st["epoch"]
+        shown = live.display_epoch()
+        if shown != live.shown_epoch:
+            live.shown_epoch = shown
+            live.push({"type": "epoch", "epoch": shown})
     except remote.RemoteError:
         live.services["kdc"] = "down"
 
@@ -322,6 +343,26 @@ ACTIONS: dict[str, ActionSpec] = {
         lambda p: "bbiot attack mitm-dh" + (" --unsigned" if p.unsigned else ""),
         lambda cfg, p, emit: actions.attack_mitm_dh(cfg, emit, bool(p.unsigned)),
     ),
+    "attack.swap_key": ActionSpec(
+        NoParams,
+        lambda p: "bbiot attack swap-key --device thermostat",
+        lambda cfg, p, emit: actions.attack_swap_key(cfg, emit, "thermostat"),
+    ),
+    "attack.kdc_vs_directory": ActionSpec(
+        NoParams,
+        lambda p: "bbiot attack kdc-vs-directory",
+        lambda cfg, p, emit: actions.attack_kdc_vs_directory(cfg, emit),
+    ),
+    "keymode.centralized": ActionSpec(
+        NoParams,
+        lambda p: "bbiot keymode centralized",
+        lambda cfg, p, emit: actions.set_keymode(cfg, "centralized", emit),
+    ),
+    "keymode.decentralized": ActionSpec(
+        NoParams,
+        lambda p: "bbiot keymode decentralized",
+        lambda cfg, p, emit: actions.set_keymode(cfg, "decentralized", emit),
+    ),
     "security.on": ActionSpec(
         NoParams,
         lambda p: "bbiot security on",
@@ -342,6 +383,7 @@ ACTIONS: dict[str, ActionSpec] = {
 
 
 def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
+    actions.IDENTITY = IDENTITY  # shared actions connect as the dashboard's TLS identity
     live = Live()
     run_lock = threading.Lock()
 
@@ -376,6 +418,7 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
 
         run_id = uuid.uuid4().hex[:8]
         mode_at_launch = live.security()
+        keymode_at_launch = live.keymode()
         if isinstance(params, MitmParams) and params.unsigned is None:
             params.unsigned = mode_at_launch == "off"
         command = spec.command(params)
@@ -405,7 +448,14 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
                 live.alert("critical", f"'{command}' found problems", command=command)
         if isinstance(result, actions.AttackResult):
             payload["result"] = result.as_dict()
-            live.results.append({**result.as_dict(), "security": mode_at_launch, "ts": time.time()})
+            live.results.append(
+                {
+                    **result.as_dict(),
+                    "security": mode_at_launch,
+                    "keymode": keymode_at_launch,
+                    "ts": time.time(),
+                }
+            )
             emit(f"[attacker] RESULT: {result.outcome} — {result.reason}")
             severity = "critical" if result.outcome == "SUCCEEDED" else "info"
             live.alert(

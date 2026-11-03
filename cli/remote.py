@@ -125,3 +125,20 @@ def proxy_mitm_status(cfg: Config) -> dict:
 
 def proxy_mitm_decrypt(cfg: Config) -> dict:
     return _call("POST", f"{cfg.proxy_url}/mitm/decrypt")
+
+
+def device_set_keymode(cfg: Config, device: str, keymode: str) -> dict:
+    return _call("POST", f"{cfg.device_url(device)}/keymode", json={"keymode": keymode})
+
+
+def device_mls_rejoin(cfg: Config, device: str) -> dict:
+    return _call("POST", f"{cfg.device_url(device)}/mls-rejoin")
+
+
+def kdc_leak(cfg: Config) -> dict:
+    return _call("POST", f"{cfg.kdc_url}/evil/leak")
+
+
+def proxy_try_loot(cfg: Config, candidates: list[str], after_capture: int = 0) -> dict:
+    body = {"candidates": candidates, "after_capture": after_capture}
+    return _call("POST", f"{cfg.proxy_url}/loot/try", json=body)

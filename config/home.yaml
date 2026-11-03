@@ -77,5 +77,9 @@ devices:
     commissioned: false
     topics: {cmd: home/door/garage/cmd, state: home/door/garage/state}
 
+# Decentralized (MLS) mode: the one member allowed to commit adds/removes.
+# Every member refuses commits from anyone else.
+group_admin: phone
+
 # Infrastructure identities that also get mTLS client certificates.
 services: [hub, cli, dashboard, evil-proxy, kdc]

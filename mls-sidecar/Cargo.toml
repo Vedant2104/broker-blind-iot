@@ -1,0 +1,18 @@
+[package]
+name = "bbiot-mls"
+version = "0.1.0"
+edition = "2021"
+description = "MLS (RFC 9420) sidecar for Broker-Blind IoT devices, built on OpenMLS"
+
+[dependencies]
+openmls = "=0.9.2"
+openmls_rust_crypto = "=0.6.0"
+openmls_basic_credential = "=0.6.0"
+openmls_traits = "=0.6.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3

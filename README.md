@@ -15,8 +15,8 @@ command, and the overhead is measured.
 | 2 | Offline root, device certs, 2-of-3 admins, directory, transparency log | ✅ done |
 | 3 | securelib AEAD + topic/seq/time/epoch binding, replay window | ✅ done (with 4) |
 | 4 | Centralized group keys (KDC), rekey on revoke, attack 6 | ✅ done (with 3) |
-| 5 | Decentralized group keys (MLS via OpenMLS sidecar) | next |
-| 6 | Hub, heartbeats, acks, MUD policy, quarantine | |
+| 5 | Decentralized group keys (MLS via OpenMLS sidecar), attacks 9–10 | ✅ done |
+| 6 | Hub, heartbeats, acks, MUD policy, quarantine | next |
 | 7 | Full dashboard | |
 | 8 | Benchmarks | |
 | 9 | Polish | |
@@ -74,7 +74,27 @@ AAD = "bbiot-msg-v1" || topic || header
 - **Rekeys** (new epoch, fresh key) when a new device joins (it can't read old traffic),
   when a device is revoked (it can't read new traffic), or on request.
 - Only the current epoch is accepted; a device that sees a newer epoch asks the KDC again.
-- The KDC knows every group key — the centralized trade-off (attack 10, phase 5).
+- The KDC knows every group key — the centralized trade-off (attack 10).
+
+### Group keys: decentralized mode (MLS)
+
+`bbiot keymode decentralized` (or the dashboard toggle) switches every device to keys
+derived among the devices themselves with **MLS (RFC 9420, TreeKEM)**:
+
+- Each device runs its own **`bbiot-mls` sidecar** (Rust, OpenMLS 0.9, ciphersuite
+  `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`) as a subprocess inside its own
+  container. MLS secrets never leave it.
+- The **MLS signature key is the device's root-certified Ed25519 key**, so every key
+  package, commit and welcome is bound to a certified identity.
+- The group key for messages is the **MLS exporter** output for the current epoch, so the
+  message layer is the same in both modes (a header flag says which mode sealed it, and
+  only the active mode's key is accepted).
+- One member is the **group admin** (`group_admin: phone` in home.yaml): it adds trusted
+  devices and removes revoked/untrusted ones. Every member refuses commits from anyone
+  else, and refuses any epoch containing a member whose MLS key ≠ its certified key.
+- The directory is the untrusted **MLS delivery service**: it stores public key packages
+  and handshake messages; a device that missed a commit (e.g. the broker dropped it)
+  catches up from there.
 
 ### Identity and PKI
 
@@ -101,6 +121,7 @@ directory/   key directory (public certs only) + admin action board
 translog/    RFC 6962 Merkle tree (merkle.py) + log service
 rootca/      offline root CA (root.py) + 2-of-3 admin approvals (approvals.py)
 kdc/         Key Distribution Center (centralized group keys)
+mls-sidecar/ Rust MLS sidecar on OpenMLS (decentralized group keys)
 dashboard/   FastAPI backend (app.py) + React frontend (web/)
 bench/       benchmarks, CSVs, charts                                  (phase 8)
 broker/      Mosquitto config (stock, mTLS only)
@@ -161,6 +182,9 @@ uv run bbiot attack redirect --from home/door/front/cmd --to home/door/back/cmd 
 uv run bbiot attack drop --topic home/smoke/kitchen       # 5. smoke alarm silently dropped
 uv run bbiot attack mitm-dh --unsigned                    # 6. key exchange MITM (insecure DH)
 uv run bbiot attack mitm-dh                               # 6. ...signed DH: caught
+uv run bbiot attack swap-key --device thermostat          # 9. directory serves the attacker's key
+uv run bbiot attack kdc-vs-directory                      # 10. compromised KDC + directory
+uv run bbiot keymode decentralized                        # switch to MLS (and back: centralized)
 uv run bbiot demo reset                                   # clear rules, reset devices
 ```
 
@@ -174,6 +198,13 @@ Run them with `bbiot security off`, then again with `bbiot security on`:
 | 4 redirect | ☠ back door unlocks | 🛡 `wrong topic` |
 | 5 drop | ☠ alarm lost silently | ☠ still lost (detection: phase 6) |
 | 6 MITM DH | ☠ `--unsigned`: group key stolen | 🛡 signed: `KDC signature invalid` |
+| 9 swap key | ☠ a client without verification trusts the attacker's key | 🛡 KDC mode: `certificate signature does not verify against the root` · MLS mode: `key package … NOT its certified key` |
+
+Attack 10 depends on the key mode, not the security toggle:
+
+| Attack 10 | Centralized (KDC) | Decentralized (MLS) |
+|---|---|---|
+| Compromised KDC leaks its key + compromised directory dumps everything | ☠ the KDC's key decrypts the traffic | 🛡 nothing decrypts it (thousands of candidate values from the directory tried; the KDC's key isn't accepted in MLS mode) |
 
 Each prints the attacker's steps and a result line, e.g.
 
@@ -219,7 +250,9 @@ rewritten to a Windows path.
 
 ```sh
 make test              # unit tests (or: uv run pytest -m "not integration")
-make test-integration  # needs the stack up: OFF/ON attack matrix, attack 6, revocation, PKI
+make test-integration  # needs the stack up: OFF/ON matrix, attacks 6/9/10, both key modes,
+                       # revocation, PKI
+make test-mls          # MLS tests against the real OpenMLS sidecar (run inside the image)
 make lint
 ```
 
@@ -249,6 +282,8 @@ cd dashboard/web && npm install && npm run dev    # http://127.0.0.1:5173, proxi
 | `BBIOT_KDC_HOST` / `_PORT` | from home.yaml | KDC control API |
 | `BBIOT_SECURITY` | `on` | device default security mode (toggle persists per device) |
 | `BBIOT_AEAD` | `AES-GCM` | or `ChaCha20-Poly1305` |
+| `BBIOT_KEYMODE` | `centralized` | device default key mode (toggle persists per device) |
+| `BBIOT_MLS_BIN` | `bbiot-mls` on PATH | MLS sidecar binary (in the image) |
 
 ## Dashboard security
 

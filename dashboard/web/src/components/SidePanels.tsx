@@ -15,6 +15,16 @@ const ATTACKS = [
     name: "6 · MITM key exchange",
     hint: "OFF: unsigned DH, group key stolen · ON: signed DH, caught",
   },
+  {
+    id: "swap_key",
+    name: "9 · Directory swaps a key",
+    hint: "Forged cert (KDC mode) or key package (MLS mode) — root/log/pin catch it",
+  },
+  {
+    id: "kdc_vs_directory",
+    name: "10 · Compromised KDC vs directory",
+    hint: "Centralized: KDC leaks the key · Decentralized: nothing to leak",
+  },
 ];
 
 const outcomeTone = { SUCCEEDED: "bad", BLOCKED: "ok", DETECTED: "warn" } as const;
@@ -31,14 +41,14 @@ export function AttackPanel({
   console: ConsoleLine[];
 }) {
   const latest = (id: string) =>
-    [...results].reverse().find((r) => r.attack === id.replace("_", "-"));
+    [...results].reverse().find((r) => r.attack === id.replace(/_/g, "-"));
   const lastRun = console.length ? console[console.length - 1].run : null;
   const lines = console.filter((c) => c.run === lastRun);
   const command = lines[0]?.line.replace(/^\$ /, "");
 
   return (
     <Card className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-      <CardHeader title="Broker attacks" right={<span className="text-[13px] text-muted">7–10 in later phases</span>} />
+      <CardHeader title="Broker attacks" right={<span className="text-[13px] text-muted">7–8 in phase 6</span>} />
       <div className="space-y-2 p-3">
         {ATTACKS.map((a) => {
           const r = latest(a.id);
@@ -53,6 +63,7 @@ export function AttackPanel({
               {r && (
                 <Badge className="shrink-0" tone={outcomeTone[r.outcome]}>{r.outcome === "SUCCEEDED" ? "Succeeded" : r.outcome === "BLOCKED" ? "Blocked" : "Detected"}
                   {r.security && ` · ${r.security.toUpperCase()}`}
+                  {r.keymode && ` · ${r.keymode === "decentralized" ? "MLS" : "KDC"}`}
                 </Badge>
               )}
               <Button

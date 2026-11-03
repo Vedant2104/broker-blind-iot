@@ -30,6 +30,7 @@ def quiet(_line: str) -> None:
 @pytest.fixture(scope="module")
 def cfg():
     c = load_config()
+    actions.set_keymode(c, "centralized", quiet)  # these tests exercise the KDC mode
     actions.demo_reset(c, quiet)
     yield c
     actions.set_security(c, "on", quiet)
@@ -132,4 +133,8 @@ def test_revoked_device_cannot_read_new_traffic(cfg) -> None:
     aid = pki_actions.pair(cfg, "garage-lock", quiet)
     pki_actions.approve(cfg, "A", aid, quiet, auto_issue=False)
     pki_actions.approve(cfg, "C", aid, quiet)
-    assert _wait(lambda: "garage-lock" in remote.kdc_status(cfg)["members"], timeout=30)
+    assert _wait(lambda: "garage-lock" in remote.kdc_status(cfg)["members"], timeout=60)
+    assert _wait(
+        lambda: remote.device_identity(cfg, "garage-lock")["cert"]["status"] == "trusted",
+        timeout=60,
+    )

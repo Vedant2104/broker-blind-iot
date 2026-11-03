@@ -64,7 +64,8 @@ class EvilBroker:
         self.cfg = cfg
         self.rules = Rules()
         self.captures = CaptureStore()
-        self.loot: dict[str, dict[int, bytes]] = {}  # victim -> epoch -> stolen key (never served)
+        self.loot: dict[tuple[str, int], bytes] = {}  # (source, epoch) -> stolen key, never served
+        self.loot_from: dict[str, set[int]] = {}  # who/what it was stolen from -> epochs
         self.stats = {"connections": 0, "forwarded": 0, "dropped": 0, "modified": 0, "injected": 0}
         self._lock = threading.Lock()
         self._injector = None
@@ -92,45 +93,76 @@ class EvilBroker:
     def collect_loot(self) -> None:
         with self._lock:
             for dev, m in self.rules.mitm.items():
-                self.loot.setdefault(dev, {}).update(m.learned)
+                for epoch, key in m.learned.items():
+                    self.loot[("kdc", epoch)] = key
+                    self.loot_from.setdefault(dev, set()).add(epoch)
 
-    def decrypt_with_loot(self) -> dict | None:
-        """Prove a stolen key works: decrypt the newest captured sealed message under
-        a stolen epoch. Returns metadata only (topic, sender, fields) — no values."""
+    def add_loot(self, source: str, epoch: int, key: bytes, origin: str) -> None:
+        """Keys handed over by another compromised component (e.g. the KDC)."""
+        with self._lock:
+            self.loot[(source, epoch)] = key
+            self.loot_from.setdefault(origin, set()).add(epoch)
+        log.info(f"☠ received a {source.upper()} epoch-{epoch} group key from {origin}")
+
+    def _sealed_captures(self, limit: int = 30, after_id: int = 0):
+        from securelib.message import peek_header
+
+        out = []
+        for cap in reversed(self.captures.find()):
+            if cap.id <= after_id:
+                break
+            h = peek_header(cap.payload) if cap.payload[:1] == b"\x01" else None
+            if h is not None:
+                out.append((cap, h))
+            if len(out) >= limit:
+                break
+        return out
+
+    def decrypt_with_loot(self, candidates: list[bytes] | None = None, after_id: int = 0) -> dict:
+        """Try every stolen key (and any extra candidate values) on the newest sealed
+        captures. Returns metadata only (topic, sender, field names) — never values."""
         import json as _json
 
         from cryptography.exceptions import InvalidTag
 
-        from securelib.message import decrypt_unchecked, peek_header
+        from securelib.message import decrypt_unchecked
 
         self.collect_loot()
-        keys = {e: k for stolen in self.loot.values() for e, k in stolen.items()}
-        for cap in reversed(self.captures.find()):
-            h = peek_header(cap.payload) if cap.payload[:1] == b"\x01" else None
-            if h is None or h.epoch not in keys:
-                continue
-            try:
-                body = _json.loads(decrypt_unchecked(cap.topic, cap.payload, keys[h.epoch]))
-            except (InvalidTag, ValueError) as exc:  # wrong key / not ours: keep looking
-                log.info(f"stolen key did not open capture #{cap.id}: {type(exc).__name__}")
-                continue
-            log.info(
-                f"☠ decrypted capture #{cap.id} on {cap.topic} with stolen epoch-{h.epoch} key"
-            )
-            return {
-                "capture": cap.id,
-                "topic": cap.topic,
-                "sender": h.sender,
-                "epoch": h.epoch,
-                "fields": sorted(body) if isinstance(body, dict) else [],
-            }
-        return None
+        sealed = self._sealed_captures(after_id=after_id)
+        tried = 0
+        for cap, h in sealed:
+            keys = [k for (src, ep), k in self.loot.items() if src == h.source and ep == h.epoch]
+            keys += candidates or []
+            for key in keys:
+                tried += 1
+                try:
+                    body = _json.loads(decrypt_unchecked(cap.topic, cap.payload, key))
+                except (InvalidTag, ValueError):
+                    continue
+                log.info(
+                    f"☠ decrypted capture #{cap.id} on {cap.topic} "
+                    f"({h.source}-epoch {h.epoch}) with a stolen key"
+                )
+                return {
+                    "decrypted": True,
+                    "capture": cap.id,
+                    "topic": cap.topic,
+                    "sender": h.sender,
+                    "source": h.source,
+                    "epoch": h.epoch,
+                    "fields": sorted(body) if isinstance(body, dict) else [],
+                    "tried": tried,
+                    "messages": len(sealed),
+                }
+        log.info(f"stolen material opened none of {len(sealed)} sealed captures ({tried} tries)")
+        return {"decrypted": False, "tried": tried, "messages": len(sealed)}
 
     def reset(self) -> None:
         with self._lock:
             self.rules.clear()
             self.captures.clear()
             self.loot.clear()
+            self.loot_from.clear()
         log.info("rules cleared, captures cleared")
 
     # --- proxying ------------------------------------------------------------

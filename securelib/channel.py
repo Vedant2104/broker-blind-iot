@@ -84,6 +84,8 @@ class Channel:
         mode: str = "off",
         *,
         group: GroupKeys | None = None,
+        groups: dict[str, GroupKeys] | None = None,
+        keymode: str | None = None,
         signer: Ed25519PrivateKey | None = None,
         peer_key: Callable[[str], Ed25519PublicKey | None] = lambda _s: None,
         requires_signature: Callable[[str], bool] = lambda _t: False,
@@ -92,18 +94,32 @@ class Channel:
     ) -> None:
         self.identity = identity
         self.mode = mode
-        self.group = group
+        self.groups: dict[str, GroupKeys] = dict(groups or {})
+        if group is not None:
+            self.groups[group.mode] = group
+        self.keymode = keymode or (next(iter(self.groups)) if self.groups else "centralized")
         self.signer = signer
         self.requires_signature = requires_signature
         self.suite = suite
         self.seq = SeqCounter(seq_path)
         self.log = get_logger("securelib")
         self.opener = Opener(
-            group_key_for=lambda e: group.key_for(e) if group else None,
-            current_epoch=lambda: (group.current() or (None,))[0] if group else None,
+            current_key=self._current_key,
             sender_key=peer_key,
             requires_signature=requires_signature,
         )
+
+    @property
+    def group(self) -> GroupKeys | None:
+        """The active group-key backend (centralized KDC or decentralized MLS)."""
+        return self.groups.get(self.keymode)
+
+    def _current_key(self, source: str) -> tuple[int, bytes] | None:
+        # Only the ACTIVE key mode's key is accepted.
+        wanted = "decentralized" if source == "mls" else "centralized"
+        if wanted != self.keymode or self.group is None:
+            return None
+        return self.group.current()
 
     @property
     def mode(self) -> str:
@@ -149,9 +165,11 @@ class Channel:
             ts_ms=int(time.time() * 1000),
             suite=self.suite,
             signer=signer,
+            source="mls" if self.keymode == "decentralized" else "kdc",
         )
         self.log.info(
-            f"epoch={epoch} seq={seq} aead={self.suite} published {len(payload)} bytes "
+            f"{'mls' if self.keymode == 'decentralized' else 'kdc'}-epoch={epoch} seq={seq} "
+            f"aead={self.suite} published {len(payload)} bytes "
             f"(payload {len(raw)} + overhead {len(payload) - len(raw)})"
             f"{' signed' if signer else ''} on {topic}"
         )

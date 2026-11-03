@@ -68,6 +68,31 @@ class DirectoryClient(_Client):
     def publish_revocation(self, signed: dict) -> dict:
         return self._req("POST", "/revocations", json={"signed": signed})
 
+    # MLS delivery service
+    def mls_put_key_package(self, device_id: str, kp_hex: str) -> dict:
+        return self._req("PUT", f"/mls/keypackages/{device_id}", json={"key_package": kp_hex})
+
+    def mls_get_key_package(self, device_id: str) -> str | None:
+        r = self._req("GET", f"/mls/keypackages/{device_id}")
+        return r["key_package"] if r else None
+
+    def mls_put_handshake(self, msg: dict) -> dict:
+        return self._req("POST", "/mls/handshakes", json=msg)
+
+    def mls_handshakes(self, group_id: str, after: int = -1) -> list[dict]:
+        params = {"group_id": group_id, "after": after}
+        return self._req("GET", "/mls/handshakes", params=params) or []
+
+    # compromised-directory demo controls
+    def evil_swap(self, device_id: str, what: str = "both") -> dict:
+        return self._req("POST", f"/evil/swap/{device_id}", params={"what": what})
+
+    def evil_clear(self) -> dict:
+        return self._req("DELETE", "/evil")
+
+    def evil_dump(self) -> dict:
+        return self._req("GET", "/evil/dump")
+
     def list_actions(self) -> list[dict]:
         return self._req("GET", "/actions") or []
 

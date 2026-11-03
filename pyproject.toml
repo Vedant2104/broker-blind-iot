@@ -43,4 +43,7 @@ ignore = ["B008"]  # Typer uses function calls in defaults
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: needs the docker compose broker running (BBIOT_INTEGRATION=1)"]
+markers = [
+    "integration: needs the docker compose broker running (BBIOT_INTEGRATION=1)",
+    "mls: needs the bbiot-mls binary (make test-mls runs them in the image)",
+]

@@ -1,4 +1,4 @@
-.PHONY: install test test-integration lint fmt certs up down doctor reset web clean
+.PHONY: test-mls install test test-integration lint fmt certs up down doctor reset web clean
 
 install:
 	uv sync --extra dev
@@ -9,6 +9,11 @@ test:
 # Needs Docker. Starts the broker, runs tests that talk to it.
 test-integration: up
 	BBIOT_INTEGRATION=1 uv run pytest -m integration
+
+# MLS tests need the Rust sidecar, so they run inside the bbiot image.
+test-mls:
+	docker compose build tls-init
+	docker run --rm -v "$(CURDIR)/tests:/app/tests:ro" --entrypoint sh bbiot:dev 	  -c "pip install -q pytest && python -m pytest -q -p no:cacheprovider -m mls tests"
 
 lint:
 	uv run ruff check .

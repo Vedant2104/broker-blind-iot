@@ -45,6 +45,7 @@ function Segmented({
               !onPick && "opacity-60",
               active && o === "ON" && "text-ok",
               active && o === "OFF" && "text-bad",
+              active && o === "Decentralized" && "text-ok",
             )}
           >
             {o}
@@ -60,12 +61,14 @@ export function TopBar({
   onReset,
   onVerifyLog,
   onSecurity,
+  onKeymode,
   busy,
 }: {
   live: LiveState;
   onReset: () => void;
   onVerifyLog: () => void;
   onSecurity: (mode: string) => void;
+  onKeymode: (mode: string) => void;
   busy: string | null;
 }) {
   const secure = live.security === "on";
@@ -91,7 +94,8 @@ export function TopBar({
       <Segmented
         options={["Centralized", "Decentralized"]}
         value={live.keymode}
-        disabledReason="Decentralized (MLS) mode arrives in phase 5"
+        onPick={onKeymode}
+        busy={!!busy}
       />
 
       <div className="flex flex-wrap items-center gap-2">
@@ -103,8 +107,8 @@ export function TopBar({
           status={live.services["translog"]}
         />
         <Pill name="KDC" status={live.services["kdc"]} />
-        <Badge tone="accent" title="current group key epoch">
-          epoch {live.epoch ?? "—"}
+        <Badge tone="accent" title="current group key epoch (KDC epoch, or MLS epoch)">
+          {live.keymode === "decentralized" ? "MLS" : "KDC"} epoch {live.epoch ?? "—"}
         </Badge>
         {!live.connected && <Badge tone="bad">dashboard offline</Badge>}
       </div>

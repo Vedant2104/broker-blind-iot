@@ -37,6 +37,9 @@ root_app = typer.Typer(help="The offline root CA.", no_args_is_help=True)
 service_app = typer.Typer(help="Run a backend service.", no_args_is_help=True)
 security_app = typer.Typer(help="End-to-end protection ON / OFF.", no_args_is_help=True)
 kdc_app = typer.Typer(help="Key Distribution Center (centralized mode).", no_args_is_help=True)
+keymode_app = typer.Typer(
+    help="Group key mode: centralized (KDC) / decentralized (MLS).", no_args_is_help=True
+)
 
 for sub, name in [
     (tls_app, "tls"),
@@ -53,6 +56,7 @@ for sub, name in [
     (service_app, "run"),
     (security_app, "security"),
     (kdc_app, "kdc"),
+    (keymode_app, "keymode"),
 ]:
     app.add_typer(sub, name=name)
 
@@ -286,17 +290,19 @@ def attack_counterfeit() -> None:
 
 @attack_app.command("swap-key")
 def attack_swap_key(
-    device: str = typer.Option(..., help="Device whose key is substituted."),
+    device: str = typer.Option("thermostat", help="Device whose key is substituted."),
 ) -> None:
-    """9. Compromised directory substitutes a public key."""
-    _check_device(_cfg(), device)
-    _todo(5, "attack swap-key")
+    """9. Compromised directory substitutes a public key (cert or MLS key package)."""
+    cfg = _cfg()
+    _check_device(cfg, device)
+    _report(_run_remote(lambda: actions.attack_swap_key(cfg, _emit, device)))  # type: ignore[arg-type]
 
 
 @attack_app.command("kdc-vs-directory")
 def attack_kdc_vs_directory() -> None:
-    """10. Compromised KDC (centralized) vs. compromised directory (decentralized)."""
-    _todo(5, "attack kdc-vs-directory")
+    """10. Compromised KDC + directory: centralized reads everything, MLS reads nothing."""
+    cfg = _cfg()
+    _report(_run_remote(lambda: actions.attack_kdc_vs_directory(cfg, _emit)))  # type: ignore[arg-type]
 
 
 # --- PKI / admin / log / bench (later phases) ---------------------------------------------
@@ -397,6 +403,35 @@ def security_status() -> None:
     """Show the current security mode."""
     cfg = _cfg()
     _emit(f"[demo] security: {actions.security_mode(cfg)}")
+
+
+@keymode_app.command("centralized")
+def keymode_centralized() -> None:
+    """Group keys from the KDC (the KDC knows them)."""
+    cfg = _cfg()
+    _run_remote(lambda: actions.set_keymode(cfg, "centralized", _emit))
+
+
+@keymode_app.command("decentralized")
+def keymode_decentralized() -> None:
+    """Group keys from MLS among the devices (nobody else knows them)."""
+    cfg = _cfg()
+    _run_remote(lambda: actions.set_keymode(cfg, "decentralized", _emit))
+
+
+@keymode_app.command("status")
+def keymode_status() -> None:
+    """Show the current key mode and each device's epoch."""
+    cfg = _cfg()
+    _emit(f"[demo] key mode: {actions.keymode_now(cfg)}")
+    for dev in cfg.devices:
+        try:
+            snap = remote.device_state(cfg, dev)
+            groups = snap.get("groups", {})
+            parts = [f"{k}: epoch {v.get('epoch')}" for k, v in groups.items()]
+            _emit(f"[demo]   {dev:<14} {' | '.join(parts)}")
+        except remote.RemoteError:
+            _emit(f"[demo]   {dev:<14} unreachable")
 
 
 @kdc_app.command("status")

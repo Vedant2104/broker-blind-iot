@@ -31,7 +31,13 @@ class DirectoryStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = threading.Lock()
-        self.data: dict[str, dict[str, Any]] = {"certs": {}, "actions": {}, "revocations": {}}
+        self.data: dict[str, Any] = {
+            "certs": {},
+            "actions": {},
+            "revocations": {},
+            "key_packages": {},
+            "handshakes": [],
+        }
         if path.exists():
             self.data = {**self.data, **json.loads(path.read_text("utf-8"))}
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,6 +68,10 @@ class RevocationBody(BaseModel):
     signed: dict[str, Any]
 
 
+class KeyPackageBody(BaseModel):
+    key_package: str
+
+
 class ApprovalBody(BaseModel):
     admin: str
     signature: str
@@ -76,16 +86,93 @@ def create_app(
     def public_cert_view(entry: dict) -> dict:
         return {k: entry[k] for k in ("device_id", "cert_pem", "leaf_index", "fingerprint")}
 
+    # Compromised-directory state (attacks 9/10). Lives only in memory.
+    evil: dict[str, dict] = {}
+
+    def served(entry: dict) -> dict:
+        forged = evil.get(entry["device_id"])
+        if forged and forged.get("cert_pem"):
+            return {**public_cert_view(entry), "cert_pem": forged["cert_pem"]}
+        return public_cert_view(entry)
+
     @app.get("/certs")
     def list_certs() -> list[dict]:
-        return [public_cert_view(e) for e in store.data["certs"].values()]
+        return [served(e) for e in store.data["certs"].values()]
 
     @app.get("/certs/{device_id}")
     def get_cert(device_id: str) -> dict:
         entry = store.data["certs"].get(device_id)
         if entry is None:
             raise HTTPException(404, f"no certificate for {device_id!r}")
-        return public_cert_view(entry)
+        return served(entry)
+
+    # --- MLS: public key packages + handshake delivery service ------------------------
+
+    @app.put("/mls/keypackages/{device_id}")
+    def put_key_package(device_id: str, body: KeyPackageBody) -> dict:
+        if device_id not in store.data["certs"]:
+            raise HTTPException(404, f"{device_id!r} has no certificate")
+        store.update(lambda d: d["key_packages"].__setitem__(device_id, body.key_package))
+        return {"device_id": device_id}
+
+    @app.get("/mls/keypackages/{device_id}")
+    def get_key_package(device_id: str) -> dict:
+        if device_id in evil and evil[device_id].get("key_package"):
+            return {"key_package": evil[device_id]["key_package"]}
+        kp = store.data["key_packages"].get(device_id)
+        if kp is None:
+            raise HTTPException(404, f"no key package for {device_id!r}")
+        return {"key_package": kp}
+
+    @app.post("/mls/handshakes")
+    def put_handshake(body: dict[str, Any]) -> dict:
+        def apply(d: dict) -> None:
+            d["handshakes"].append(body)
+            del d["handshakes"][:-500]
+
+        store.update(apply)
+        return {"stored": len(store.data["handshakes"])}
+
+    @app.get("/mls/handshakes")
+    def get_handshakes(group_id: str, after: int = -1) -> list[dict]:
+        found = [
+            h
+            for h in store.data["handshakes"]
+            if h.get("group_id") == group_id and int(h.get("epoch", -1)) > after
+        ]
+        return sorted(found, key=lambda h: int(h["epoch"]))
+
+    # --- compromised directory (demo attacks; localhost only) ----------------------------
+
+    @app.post("/evil/swap/{device_id}")
+    def evil_swap(device_id: str, what: str = "both") -> dict:
+        from directory.evil import forge_device_cert, forge_key_package
+
+        if device_id not in store.data["certs"]:
+            raise HTTPException(404, f"{device_id!r} has no certificate")
+        cert_pem, attacker = forge_device_cert(device_id, root_cert)
+        evil[device_id] = {
+            "cert_pem": cert_pem if what in ("cert", "both") else None,
+            "key_package": (
+                forge_key_package(device_id, attacker) if what in ("keypackage", "both") else None
+            ),
+        }
+        log.info(
+            f"☠ COMPROMISED: now serving the attacker's certificate + key package for {device_id}"
+        )
+        return {"device_id": device_id, "key_package_forged": bool(evil[device_id]["key_package"])}
+
+    @app.delete("/evil")
+    def evil_clear() -> dict:
+        evil.clear()
+        log.info("evil mode off: serving genuine entries again")
+        return {"ok": True}
+
+    @app.get("/evil/dump")
+    def evil_dump() -> dict:
+        """Everything a compromised directory holds — for attack 10."""
+        log.info("☠ COMPROMISED: full database dump handed to the attacker")
+        return store.data
 
     @app.post("/certs")
     def publish(body: CertBody) -> dict:

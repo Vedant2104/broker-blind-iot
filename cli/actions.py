@@ -24,6 +24,10 @@ from securelib.mqtt import address, make_client
 
 Emit = Callable[[str], None]
 
+# TLS identity used for HTTPS/MQTT calls made by these actions: "cli" on the
+# admin's machine, "dashboard" inside the dashboard container.
+IDENTITY = "cli"
+
 SUCCEEDED, BLOCKED, DETECTED = "SUCCEEDED", "BLOCKED", "DETECTED"
 
 
@@ -381,3 +385,176 @@ def attack_mitm_dh(
         remote.device_rejoin(cfg, victim, "signed")
         return AttackResult("mitm-dh", BLOCKED, alert[-1]["reason"], command)
     return AttackResult("mitm-dh", BLOCKED, "key exchange could not be tampered with", command)
+
+
+# --- key mode -----------------------------------------------------------------------------------
+
+KEYMODES = ("centralized", "decentralized")
+
+
+def set_keymode(cfg: Config, keymode: str, emit: Emit, wait: float = 20.0) -> str:
+    """Switch every device between the KDC (centralized) and MLS (decentralized)."""
+    if keymode not in KEYMODES:
+        raise remote.RemoteError(f"key mode must be one of {', '.join(KEYMODES)}")
+    for device in cfg.devices:
+        try:
+            remote.device_set_keymode(cfg, device, keymode)
+            emit(f"[{cfg.devices[device].log_name}] key mode {keymode.upper()}")
+        except remote.RemoteError as exc:
+            emit(f"[{cfg.devices[device].log_name}] skipped: {exc}")
+
+    def ready() -> list[str]:
+        return [
+            d
+            for d in cfg.devices
+            if (remote.device_state(cfg, d).get("group") or {}).get("epoch") is None
+            and remote.device_state(cfg, d)["identity"]["cert"]["status"] == "trusted"
+        ]
+
+    waiting = _wait_for(lambda: not ready(), timeout=wait)
+    if waiting is None:
+        emit(f"[demo] still waiting for a {keymode} group key on: {', '.join(ready())}")
+    who = "KDC knows the group key" if keymode == "centralized" else "nobody but members knows it"
+    emit(f"[demo] key mode {keymode.upper()} ({who})")
+    return keymode
+
+
+def keymode_now(cfg: Config) -> str:
+    modes = set()
+    for device in cfg.devices:
+        with contextlib.suppress(remote.RemoteError):
+            modes.add(remote.device_state(cfg, device).get("keymode"))
+    modes.discard(None)
+    return modes.pop() if len(modes) == 1 else "mixed" if modes else "unknown"
+
+
+# --- attack 9 -------------------------------------------------------------------------------------
+
+
+def attack_swap_key(cfg: Config, emit: Emit, device: str = "thermostat") -> AttackResult:
+    """9. Compromised directory substitutes a device's public key."""
+    from securelib.services import DirectoryClient
+    from securelib.trust import TrustAnchors
+
+    command = _cmdline("attack", "swap-key", "--device", device)
+    keymode, security = keymode_now(cfg), security_mode(cfg)
+    directory = DirectoryClient.connect(cfg, IDENTITY)
+    what = "keypackage" if keymode == "decentralized" else "cert"
+    directory.evil_swap(device, what)
+    _say(emit, f"directory compromised: serving the attacker's {what} for {device}")
+    marks = {d: _mark(cfg, d) for d in cfg.devices}
+    try:
+        if security == "off":
+            # A client that trusts the directory blindly (no root/log/pin checks).
+            served = directory.get_cert(device)
+            from cryptography import x509 as _x509
+
+            from securelib.pki import fingerprint, raw_public
+
+            pub = _x509.load_pem_x509_certificate(served["cert_pem"].encode()).public_key()
+            fp = fingerprint(raw_public(pub))
+            reason = (
+                f"a client without verification would trust the directory's key for "
+                f"{device} (fp {fp[:23]}…) — the attacker's"
+            )
+            return AttackResult("swap-key", SUCCEEDED, reason, command)
+
+        if keymode == "decentralized":
+            _say(emit, f"{device} asks the MLS admin ({cfg.group_admin}) to re-add it")
+            remote.device_mls_rejoin(cfg, device)
+        else:
+            _say(emit, f"{device} re-joins via the KDC; every device re-checks its certificate")
+            remote.device_rejoin(cfg, device)
+
+        def caught() -> list[dict]:
+            return [
+                {**e, "device": d}
+                for d in cfg.devices
+                for e in _events_since(cfg, d, marks[d], "alert")
+            ]
+
+        alerts = _wait_for(caught, timeout=20)
+        # Independent check from the CLI's own verifier.
+        anchors = TrustAnchors.from_config(cfg)
+        try:
+            anchors.verify_cert_pem(directory.get_cert(device)["cert_pem"], expected_id=device)
+            cli_view = "certificate itself is genuine"
+        except Exception as exc:  # noqa: BLE001 - any trust failure is the evidence
+            cli_view = f"CLI check: {exc}"
+    finally:
+        directory.evil_clear()
+        _say(emit, "directory restored; the victim re-joins with its genuine keys")
+        with contextlib.suppress(remote.RemoteError):
+            if keymode == "decentralized":
+                remote.device_mls_rejoin(cfg, device)
+            else:
+                remote.device_rejoin(cfg, device)
+
+    if alerts:
+        first = alerts[0]
+        reason = f"caught by {first['device']}: {first['reason']} ({cli_view})"
+        return AttackResult("swap-key", BLOCKED, reason, command, {"alerts": len(alerts)})
+    return AttackResult("swap-key", BLOCKED, f"substituted key never used ({cli_view})", command)
+
+
+# --- attack 10 ------------------------------------------------------------------------------------
+
+
+def _hex_candidates(obj, out: set[str]) -> None:
+    """Every 32-byte value that appears anywhere in a JSON dump (as hex)."""
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _hex_candidates(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _hex_candidates(v, out)
+    elif isinstance(obj, str) and len(obj) >= 64:
+        try:
+            bytes.fromhex(obj)
+        except ValueError:
+            return
+        for i in range(0, len(obj) - 63, 64):
+            out.add(obj[i : i + 64])
+
+
+def attack_kdc_vs_directory(cfg: Config, emit: Emit) -> AttackResult:
+    """10. Compromised KDC (centralized) vs. compromised directory (decentralized)."""
+    from securelib.services import DirectoryClient
+
+    command = _cmdline("attack", "kdc-vs-directory")
+    keymode = keymode_now(cfg)
+    latest = remote.proxy_captures(cfg, limit=1)
+    since = latest[-1]["id"] if latest else 0  # judge only traffic sent during this attack
+    _say(emit, f"key mode is {keymode.upper()}; generating traffic to steal")
+    send(cfg, "phone", _cmd_topic(cfg, "thermostat"), "set", {"setpoint": 21}, emit)
+    time.sleep(1.5)
+
+    leaked = remote.kdc_leak(cfg)
+    _say(emit, f"KDC compromised: it hands over its epoch-{leaked['leaked_epoch']} group key")
+    dump = DirectoryClient.connect(cfg, IDENTITY).evil_dump()
+    cands: set[str] = set()
+    _hex_candidates(dump, cands)
+    n_kp = len(dump.get("key_packages", {}))
+    n_hs = len(dump.get("handshakes", []))
+    _say(
+        emit,
+        f"directory compromised: dumped {len(dump.get('certs', {}))} certificates, {n_kp} key "
+        f"packages, {n_hs} MLS handshakes → {len(cands)} candidate 32-byte values",
+    )
+    result = remote.proxy_try_loot(cfg, sorted(cands), after_capture=since)
+    if result["messages"] == 0:
+        return AttackResult(
+            "kdc-vs-directory", BLOCKED, f"{keymode}: no sealed traffic to attack", command
+        )
+    if result["decrypted"]:
+        reason = (
+            f"{keymode}: compromised KDC's key decrypted {result['topic']} from "
+            f"{result['sender']} (fields: {', '.join(result['fields'])}) — the KDC reads everything"
+        )
+        return AttackResult("kdc-vs-directory", SUCCEEDED, reason, command, result)
+    reason = (
+        f"{keymode}: neither the KDC's key nor anything in the directory "
+        f"({len(cands)} candidates) decrypts the {result['messages']} sealed messages — "
+        "MLS secrets exist only on member devices"
+    )
+    return AttackResult("kdc-vs-directory", BLOCKED, reason, command, result)

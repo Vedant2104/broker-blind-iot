@@ -46,8 +46,7 @@ def mk(body: bytes = b'{"cmd":"unlock"}', **kw) -> bytes:
 def opener(epoch: int = 3, key: bytes = KEY, **kw) -> Opener:
     keys = {"phone": PHONE.public_key(), "thermostat": THERMO.public_key()}
     args = dict(
-        group_key_for=lambda e: key if e == epoch else None,
-        current_epoch=lambda: epoch,
+        current_key=lambda src: (epoch, key) if src == "kdc" else None,
         sender_key=keys.get,
         requires_signature=lambda t: t.endswith("/cmd"),
     )
@@ -177,7 +176,16 @@ def test_unknown_sender_rejected() -> None:
 
 
 def test_no_group_key_yet() -> None:
-    assert reason(opener(current_epoch=lambda: None), mk()) == "no group key yet"
+    assert reason(opener(current_key=lambda src: None), mk()).startswith("no KDC group key")
+
+
+def test_key_source_must_match_active_mode() -> None:
+    """An MLS-sealed message is not accepted while only the KDC key is active, and
+    vice versa — so a compromised KDC is useless once the home runs MLS."""
+    assert reason(opener(), mk(source="mls")).startswith("no MLS group key")
+    mls_only = opener(current_key=lambda src: (3, KEY) if src == "mls" else None)
+    assert mls_only.open(TOPIC, mk(source="mls"), now()).epoch == 3
+    assert reason(mls_only, mk(seq=2)).startswith("no KDC group key")
 
 
 @pytest.mark.parametrize("payload", [b"", b"\x01\x01", b'{"cmd":"unlock"}', os.urandom(40)])

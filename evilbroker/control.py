@@ -32,6 +32,18 @@ class DeviceBody(BaseModel):
     device: str
 
 
+class LootBody(BaseModel):
+    source: str
+    epoch: int
+    key: str
+    origin: str
+
+
+class TryBody(BaseModel):
+    candidates: list[str] = []
+    after_capture: int = 0  # only messages captured after this id
+
+
 class InjectBody(BaseModel):
     capture_id: int
 
@@ -81,16 +93,34 @@ def create_app(cfg: Config, broker: EvilBroker) -> FastAPI:
         broker.collect_loot()
         notes = {d: m.notes for d, m in broker.rules.mitm.items()}
         return {
-            "stolen_epochs": {d: sorted(k) for d, k in broker.loot.items()},
+            "stolen_epochs": {d: sorted(k) for d, k in broker.loot_from.items()},
             "notes": notes,
         }
 
     @app.post("/mitm/decrypt")
     def mitm_decrypt() -> dict:
         found = broker.decrypt_with_loot()
-        if found is None:
+        if not found["decrypted"]:
             raise HTTPException(404, "no captured message under a stolen key")
         return found
+
+    @app.post("/loot")
+    def add_loot(body: LootBody) -> dict:
+        """A colluding compromised component (attack 10) hands over a key."""
+        broker.add_loot(body.source, body.epoch, bytes.fromhex(body.key), body.origin)
+        return {"ok": True}
+
+    @app.post("/loot/try")
+    def try_loot(body: TryBody) -> dict:
+        cands = []
+        for c in body.candidates[:5000]:
+            try:
+                b = bytes.fromhex(c)
+            except ValueError:
+                continue
+            if len(b) == 32:
+                cands.append(b)
+        return broker.decrypt_with_loot(cands, after_id=body.after_capture)
 
     @app.delete("/rules")
     def clear_rules() -> dict:

@@ -9,7 +9,7 @@ Wire layout (all integers big-endian):
     seq          8   sender's sequence number
     ts_ms        8   sender's clock, milliseconds
     topic_tag    4   first 4 bytes of SHA-256(topic) — fast "wrong topic" check
-    flags        1   bit 0: body is signed by the sender
+    flags        1   bit 0: body is signed by the sender; bit 1: key from MLS
     sender_len   1
     sender       n   sender device id (UTF-8)
     nonce       12   fresh random per message
@@ -56,6 +56,7 @@ SUITE_IDS = {"AES-GCM": 1, "ChaCha20-Poly1305": 2}
 _FIXED = struct.Struct(">BBIQQ4sBB")  # version..sender_len
 NONCE_LEN, TAG_LEN, SIG_LEN = 12, 16, 64
 FLAG_SIGNED = 0x01
+FLAG_MLS = 0x02  # sealed with the MLS-exported key (decentralized), else KDC key
 AAD_CONTEXT = b"bbiot-msg-v1"
 SIG_CONTEXT = b"bbiot-msg-sig-v1"
 KEY_INFO = b"bbiot-msg-key-v1"
@@ -85,6 +86,11 @@ class Header:
     @property
     def signed(self) -> bool:
         return bool(self.flags & FLAG_SIGNED)
+
+    @property
+    def source(self) -> str:
+        """Which key management produced the key: 'mls' or 'kdc'."""
+        return "mls" if self.flags & FLAG_MLS else "kdc"
 
 
 def topic_tag(topic: str) -> bytes:
@@ -152,10 +158,11 @@ def seal(
     ts_ms: int,
     suite: str = "AES-GCM",
     signer: Ed25519PrivateKey | None = None,
+    source: str = "kdc",
 ) -> bytes:
     suite_id = SUITE_IDS[suite]
     nonce = os.urandom(NONCE_LEN)  # fresh random nonce for every message
-    flags = FLAG_SIGNED if signer else 0
+    flags = (FLAG_SIGNED if signer else 0) | (FLAG_MLS if source == "mls" else 0)
     header = encode_header(suite_id, epoch, seq, ts_ms, topic, flags, sender, nonce)
     a = aad(topic, header)
     plaintext = body
@@ -226,15 +233,13 @@ class Opener:
     def __init__(
         self,
         *,
-        group_key_for: Callable[[int], bytes | None],
-        current_epoch: Callable[[], int | None],
+        current_key: Callable[[str], tuple[int, bytes] | None],
         sender_key: Callable[[str], Ed25519PublicKey | None],
         requires_signature: Callable[[str], bool],
         max_skew_ms: int = 30_000,
         window: int = 64,
     ) -> None:
-        self.group_key_for = group_key_for
-        self.current_epoch = current_epoch
+        self.current_key = current_key  # source ('kdc' | 'mls') -> (epoch, key) or None
         self.sender_key = sender_key
         self.requires_signature = requires_signature
         self.max_skew_ms = max_skew_ms
@@ -248,9 +253,12 @@ class Opener:
             raise Reject(f"malformed (version {h.version} / suite {h.suite})")
         if not hmac.compare_digest(h.topic_tag, topic_tag(topic)):
             raise Reject(f"wrong topic (sealed for another topic, delivered on {topic})")
-        current = self.current_epoch()
-        if current is None:
-            raise Reject("no group key yet")
+        cur = self.current_key(h.source)
+        if cur is None:
+            raise Reject(
+                f"no {h.source.upper()} group key (not the active key mode, or not joined yet)"
+            )
+        current, key = cur
         if h.epoch != current:
             raise Reject(f"wrong epoch (message epoch {h.epoch}, current {current})")
         skew = now_ms - h.ts_ms
@@ -263,9 +271,6 @@ class Opener:
             window = self._windows.setdefault(h.sender, ReplayWindow(self.window_size))
             window.check(h.seq)
 
-        key = self.group_key_for(h.epoch)
-        if key is None:
-            raise Reject("no group key for that epoch")
         a = aad(topic, h.raw)
         try:
             pt = SUITES[h.suite][1](message_key(key, h.epoch)).decrypt(h.nonce, ct, a)

@@ -117,10 +117,16 @@ class DeviceBase:
             on_alert=self.alert,
         )
         self._mode_path = key_dir / "security.json"
+        self._keymode_path = key_dir / "keymode.json"
+        self.mls = self._build_mls()
+        groups = {"centralized": self.group}
+        if self.mls is not None:
+            groups["decentralized"] = self.mls
         self.channel = Channel(
             dev.id,
             mode or self._load_mode(),
-            group=self.group,
+            groups=groups,
+            keymode=self._load_keymode(groups),
             signer=self.keys.sign_key,
             peer_key=self.trust.peer_key,
             requires_signature=self._requires_signature,
@@ -130,6 +136,47 @@ class DeviceBase:
         self._announced_epoch: int | None = None
         self._last_catch_up = 0.0
         self.log.info(f"security {self.channel.mode.upper()}")
+
+    def _build_mls(self):
+        """Decentralized group keys (MLS sidecar), if the bbiot-mls binary is present."""
+        from securelib.mls import DecentralizedGroupKeys, MlsError
+
+        device = self
+
+        class LazyDirectory:  # the trust watch builds the HTTPS client on first use
+            def __getattr__(self, name: str):
+                return getattr(device.trust._verifier_or_build().directory, name)
+
+        try:
+            return DecentralizedGroupKeys(
+                self.dev.id,
+                self.keys.sign_key,
+                self.cfg.group_admin,
+                publish=self._publish_json,
+                certified_key=self.trust.peer_key,
+                directory=LazyDirectory(),
+                on_alert=self.alert,
+                trusted_peers=self.trust.trusted_peers,
+                refresh_trust=self.trust.poke,
+            )
+        except (MlsError, OSError) as exc:
+            self.log.info(f"decentralized (MLS) mode unavailable: {exc}")
+            return None
+
+    def _load_keymode(self, groups: dict) -> str:
+        try:
+            mode = json.loads(self._keymode_path.read_text())["keymode"]
+        except (OSError, ValueError, KeyError):
+            mode = os.environ.get("BBIOT_KEYMODE", "centralized")
+        return mode if mode in groups else "centralized"
+
+    def set_keymode(self, keymode: str) -> None:
+        if keymode not in self.channel.groups:
+            raise ValueError(f"key mode {keymode!r} not available here")
+        self.channel.keymode = keymode
+        self._keymode_path.write_text(json.dumps({"keymode": keymode}))
+        self.log.info(f"key mode {keymode.upper()}")
+        self._announced_epoch = None
 
     def _load_mode(self) -> str:
         try:
@@ -182,14 +229,19 @@ class DeviceBase:
         """Traffic under a NEWER epoch means we missed a rekey: ask the KDC again
         (rate-limited). A revoked device is simply refused by the KDC."""
         header = peek_header(payload)
-        current = self.group.epoch or 0
+        active = self.channel.group
+        current = (active.epoch if active is not None else None) or 0
         if header is None or header.epoch <= current:
             return
         now = time.monotonic()
         if now - self._last_catch_up > 10:
             self._last_catch_up = now
-            self.log.info(f"saw epoch {header.epoch} > mine ({current}) → asking the KDC")
-            self.group.rejoin()
+            if header.source == "mls" and self.mls is not None:
+                self.log.info(f"saw MLS epoch {header.epoch} > mine ({current}) → catching up")
+                self.mls.catch_up()
+            elif header.source == "kdc":
+                self.log.info(f"saw epoch {header.epoch} > mine ({current}) → asking the KDC")
+                self.group.rejoin()
 
     def _publish_json(self, topic: str, msg: dict) -> None:
         """Key-exchange messages: plain JSON, public values only."""
@@ -198,7 +250,10 @@ class DeviceBase:
 
     def _housekeeping(self) -> None:
         self.group.tick()
-        epoch = self.group.epoch
+        if self.mls is not None and self.connected and self.trust.trusted:
+            self.mls.tick()
+        active = self.channel.group
+        epoch = active.epoch if active is not None else None
         if self.channel.mode == "on" and epoch is not None and epoch != self._announced_epoch:
             self._announced_epoch = epoch
             self.publish_state()
@@ -208,7 +263,8 @@ class DeviceBase:
             self.log.info(f"broker refused connection: {rc}")
             return
         self.connected = True
-        for topic in self.subscriptions() + self.group.subscriptions():
+        extra = self.mls.subscriptions() if self.mls is not None else []
+        for topic in self.subscriptions() + self.group.subscriptions() + extra:
             client.subscribe(topic, qos=1)
         self.log.info(
             f"connected to broker {self.cfg.broker_host}:{self.cfg.broker_port} "
@@ -223,6 +279,10 @@ class DeviceBase:
     def _on_message(self, _c: mqtt.Client, _u: Any, msg: mqtt.MQTTMessage) -> None:
         if msg.topic.startswith("kdc/"):
             self.group.handle(msg.topic, msg.payload)
+            return
+        if msg.topic.startswith("mls/"):
+            if self.mls is not None:
+                self.mls.handle(msg.topic, msg.payload)
             return
         opened = self.channel.open(msg.topic, msg.payload)
         if not opened.ok and (opened.reason or "").startswith("wrong epoch"):
@@ -291,7 +351,9 @@ class DeviceBase:
             "connected": self.connected,
             "state": state,
             "security": self.channel.mode,
-            "group": self.group.status(),
+            "keymode": self.channel.keymode,
+            "group": (self.channel.group or self.group).status(),
+            "groups": {name: g.status() for name, g in self.channel.groups.items()},
             "identity": self.trust.snapshot(),
             "last_event": self.events.last_id,
         }
@@ -358,6 +420,17 @@ class DeviceBase:
                 if url.path == "/security":
                     try:
                         device.set_security(str(data.get("mode", "")))
+                    except ValueError as exc:
+                        return self._json(422, {"error": str(exc)})
+                    return self._json(200, device.snapshot())
+                if url.path == "/mls-rejoin":
+                    if device.mls is None:
+                        return self._json(422, {"error": "MLS not available"})
+                    device.mls.request_rejoin(force=True)
+                    return self._json(200, {"requested": True})
+                if url.path == "/keymode":
+                    try:
+                        device.set_keymode(str(data.get("keymode", "")))
                     except ValueError as exc:
                         return self._json(422, {"error": str(exc)})
                     return self._json(200, device.snapshot())

@@ -33,7 +33,7 @@ def test_bad_params_422(client: TestClient, setpoint) -> None:
 
 def test_allowlist_is_fixed() -> None:
     assert all(
-        name.split(".")[0] in {"phone", "attack", "demo", "log", "security"}
+        name.split(".")[0] in {"phone", "attack", "demo", "log", "security", "keymode"}
         for name in dash.ACTIONS
     )
 
