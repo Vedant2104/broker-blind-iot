@@ -1,0 +1,98 @@
+import { RotateCcw, ShieldOff, ShieldCheck } from "lucide-react";
+import { Badge, Button, cn } from "./ui";
+import type { LiveState } from "../live";
+
+function Pill({ name, status }: { name: string; status?: string }) {
+  const tone = status === "up" ? "ok" : status === "down" ? "bad" : "muted";
+  return (
+    <Badge tone={tone} title={`${name}: ${status ?? "not built yet"}`}>
+      <span
+        className={cn(
+          "h-2 w-2 rounded-full",
+          tone === "ok" ? "bg-ok" : tone === "bad" ? "bg-bad" : "bg-muted",
+        )}
+      />
+      {name}
+    </Badge>
+  );
+}
+
+function Segmented({
+  options,
+  value,
+  disabledReason,
+}: {
+  options: string[];
+  value: string;
+  disabledReason?: string;
+}) {
+  return (
+    <div
+      className="flex rounded-lg border border-line bg-panel-2 p-0.5"
+      title={disabledReason}
+    >
+      {options.map((o) => (
+        <span
+          key={o}
+          className={cn(
+            "rounded-md px-3 py-1 text-[14px] font-semibold",
+            o.toLowerCase() === value ? "bg-panel text-fg shadow" : "text-muted",
+            disabledReason && "opacity-60",
+          )}
+        >
+          {o}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export function TopBar({
+  live,
+  onReset,
+  resetting,
+}: {
+  live: LiveState;
+  onReset: () => void;
+  resetting: boolean;
+}) {
+  const secure = live.security === "on";
+  return (
+    <header className="flex flex-wrap items-center gap-4 border-b border-line bg-panel px-5 py-3">
+      <div className="mr-2 text-xl font-extrabold tracking-tight">Broker-Blind IoT</div>
+
+      <div className="flex items-center gap-2">
+        {secure ? (
+          <ShieldCheck className="h-6 w-6 text-ok" />
+        ) : (
+          <ShieldOff className="h-6 w-6 text-bad" />
+        )}
+        <Segmented
+          options={["OFF", "ON"]}
+          value={live.security}
+          disabledReason="Security ON (broker-blind) arrives in phase 3"
+        />
+        <span className="text-[14px] text-muted">{secure ? "broker-blind" : "TLS only"}</span>
+      </div>
+
+      <Segmented
+        options={["Centralized", "Decentralized"]}
+        value={live.keymode}
+        disabledReason="Group key modes arrive in phases 4–5"
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Pill name="broker" status={live.services["broker"]} />
+        <Pill name="evil-broker" status={live.services["evil-broker"]} />
+        <Pill name="directory" />
+        <Pill name="transparency log" />
+        <Badge tone="muted">epoch {live.epoch ?? "—"}</Badge>
+        {!live.connected && <Badge tone="bad">dashboard offline</Badge>}
+      </div>
+
+      <Button variant="outline" className="ml-auto" onClick={onReset} disabled={resetting}>
+        <RotateCcw className="h-4 w-4" /> Reset demo
+      </Button>
+    </header>
+  );
+}

@@ -1,7 +1,26 @@
-# Phase 0 skeleton: TLS material + Mosquitto (mTLS).
-# Later phases add: evil-broker proxy, devices, hub, directory, translog, dashboard.
+# Phase 1: Mosquitto behind the evil-broker proxy, five simulated devices, dashboard.
+# All host ports bind to 127.0.0.1 only.
+#
+#   clients (devices, phone, CLI) ──mTLS──> evil-broker :8883 ──mTLS──> Mosquitto (broker) :8883
+#                                                                          host: 127.0.0.1:8884
 
 name: bbiot
+
+x-bbiot: &bbiot
+  image: bbiot:dev
+  restart: unless-stopped
+  depends_on:
+    evil-broker:
+      condition: service_started
+  environment: &bbiot-env
+    BBIOT_BROKER_HOST: evil-broker
+    BBIOT_MOSQUITTO_HOST: broker
+    BBIOT_MOSQUITTO_PORT: "8883"
+    BBIOT_PROXY_HOST: evil-broker
+    BBIOT_DEVICE_HOST: service
+    BBIOT_CONTROL_BIND: 0.0.0.0
+  volumes:
+    - ./secrets:/app/secrets
 
 services:
   # One-shot: create transport CA + broker/client certs in ./secrets if missing.
@@ -15,13 +34,14 @@ services:
       - ./secrets:/app/secrets
     restart: "no"
 
+  # Stock Mosquitto, unmodified and untrusted.
   broker:
     image: eclipse-mosquitto:2.0.20
     depends_on:
       tls-init:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:8883:8883"
+      - "127.0.0.1:8884:8883"
     command: ["mosquitto", "-c", "/etc/bbiot/mosquitto.conf"]
     # Mount folders, not single files: Docker would otherwise create empty
     # directories in place of certs that tls-init has not written yet.
@@ -29,26 +49,68 @@ services:
       - ./broker:/etc/bbiot:ro
       - ./secrets/tls/broker:/certs:ro
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 8883 || exit 1"]
       # Fast checks while starting, then rarely (each check logs a harmless
       # "unexpected eof" line in the broker log because it opens a bare TCP socket).
+      test: ["CMD-SHELL", "nc -z localhost 8883 || exit 1"]
       start_period: 30s
       start_interval: 1s
       interval: 60s
       timeout: 2s
       retries: 3
 
-  # `docker compose run --rm cli doctor` — the bbiot CLI inside the network.
-  cli:
+  # The malicious broker operator: MITM in front of Mosquitto. Pass-through
+  # unless an attack is armed through its control API (:8090).
+  evil-broker:
     image: bbiot:dev
-    profiles: ["tools"]
+    restart: unless-stopped
+    command: ["proxy", "run"]
     depends_on:
       broker:
         condition: service_healthy
     environment:
-      BBIOT_BROKER_HOST: broker
+      <<: *bbiot-env
+      BBIOT_PROXY_LISTEN: 0.0.0.0
+    ports:
+      - "127.0.0.1:8883:8883"
+      - "127.0.0.1:8090:8090"
     volumes:
       - ./secrets:/app/secrets
+
+  front-door:
+    <<: *bbiot
+    command: ["device", "run", "--id", "front-door"]
+    ports: ["127.0.0.1:8101:8101"]
+
+  back-door:
+    <<: *bbiot
+    command: ["device", "run", "--id", "back-door"]
+    ports: ["127.0.0.1:8102:8102"]
+
+  thermostat:
+    <<: *bbiot
+    command: ["device", "run", "--id", "thermostat"]
+    ports: ["127.0.0.1:8103:8103"]
+
+  smoke-kitchen:
+    <<: *bbiot
+    command: ["device", "run", "--id", "smoke-kitchen"]
+    ports: ["127.0.0.1:8104:8104"]
+
+  phone:
+    <<: *bbiot
+    command: ["device", "run", "--id", "phone"]
+    ports: ["127.0.0.1:8105:8105"]
+
+  dashboard:
+    <<: *bbiot
+    command: ["dashboard", "run", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["127.0.0.1:8000:8000"]
+
+  # `docker compose run --rm cli attack replay` — the bbiot CLI inside the network.
+  cli:
+    <<: *bbiot
+    profiles: ["tools"]
+    restart: "no"
 
   # Plain mosquitto_pub / mosquitto_sub with a client cert, e.g.:
   #   docker compose run --rm mqtt-tools mosquitto_sub -h broker -p 8883 \

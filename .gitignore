@@ -26,3 +26,6 @@ bench/out/
 Thumbs.db
 .vscode/
 .idea/
+
+# Dashboard build output
+dashboard/web/dist/

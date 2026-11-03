@@ -1,17 +1,20 @@
 """bbiot — every action in the system is a command here.
 
-Phase 0: `tls init` and `doctor` work. Other commands are wired with their
-final arguments (validated against config/home.yaml) and say which phase
-implements them.
+Working: tls init, doctor, status, send, spy, attack read/modify/replay/redirect/drop,
+demo reset, and the runners (device/proxy/dashboard run). The remaining commands
+take their final arguments and say which phase implements them.
 """
 
 from __future__ import annotations
 
 import os
+import time
+from collections.abc import Callable
 from enum import StrEnum
 
 import typer
 
+from cli import actions, remote
 from cli import doctor as doctor_mod
 from securelib.config import Config, load_config
 from securelib.log import get_logger
@@ -24,13 +27,22 @@ admin_app = typer.Typer(help="Admin approvals (2-of-3 signatures).", no_args_is_
 log_app = typer.Typer(help="Transparency log.", no_args_is_help=True)
 bench_app = typer.Typer(help="Benchmarks.", no_args_is_help=True)
 demo_app = typer.Typer(help="Demo helpers.", no_args_is_help=True)
+device_app = typer.Typer(help="Run a simulated device.", no_args_is_help=True)
+proxy_app = typer.Typer(help="The evil-broker proxy.", no_args_is_help=True)
+dashboard_app = typer.Typer(help="The web dashboard.", no_args_is_help=True)
 
-app.add_typer(tls_app, name="tls")
-app.add_typer(attack_app, name="attack")
-app.add_typer(admin_app, name="admin")
-app.add_typer(log_app, name="log")
-app.add_typer(bench_app, name="bench")
-app.add_typer(demo_app, name="demo")
+for sub, name in [
+    (tls_app, "tls"),
+    (attack_app, "attack"),
+    (admin_app, "admin"),
+    (log_app, "log"),
+    (bench_app, "bench"),
+    (demo_app, "demo"),
+    (device_app, "device"),
+    (proxy_app, "proxy"),
+    (dashboard_app, "dashboard"),
+]:
+    app.add_typer(sub, name=name)
 
 log = get_logger("cli")
 
@@ -43,6 +55,10 @@ class Admin(StrEnum):
 
 def _cfg() -> Config:
     return load_config()
+
+
+def _emit(line: str) -> None:
+    print(line, flush=True)
 
 
 def _todo(phase: int, what: str) -> None:
@@ -62,7 +78,23 @@ def _check_topic(cfg: Config, topic: str, *, allow_wildcard: bool = False) -> No
         raise typer.BadParameter(f"unknown topic '{topic}'. Known: {', '.join(cfg.topics)}")
 
 
-# --- working in phase 0 -----------------------------------------------------
+def _run_remote(fn: Callable[[], object]) -> object:
+    """Run an action, turning unreachable services into a clean error."""
+    try:
+        return fn()
+    except remote.RemoteError as exc:
+        log.info(f"✗ {exc}")
+        if isinstance(exc, remote.Unreachable):
+            log.info("is the stack running? try: docker compose up -d")
+        raise typer.Exit(code=1) from exc
+
+
+def _report(result: actions.AttackResult) -> None:
+    mark = {"SUCCEEDED": "☠", "BLOCKED": "🛡", "DETECTED": "🔔"}.get(result.outcome, "?")
+    _emit(f"[attacker] {mark} RESULT: {result.outcome} — {result.reason}")
+
+
+# --- setup / health ---------------------------------------------------------------
 
 
 @tls_app.command("init")
@@ -102,68 +134,115 @@ def doctor(
         raise typer.Exit(code=1)
 
 
-# --- wired, implemented in later phases --------------------------------------
+@app.command()
+def status() -> None:
+    """Show every device's state and the evil broker's armed rules."""
+    cfg = _cfg()
+    for dev in cfg.devices:
+        try:
+            snap = remote.device_state(cfg, dev)
+            conn = "online " if snap["connected"] else "OFFLINE"
+            _emit(f"[status] {dev:<14} {conn} security={snap['security']}  {snap['state']}")
+        except remote.RemoteError:
+            _emit(f"[status] {dev:<14} unreachable")
+    try:
+        st = remote.proxy_status(cfg)
+        _emit(f"[status] evil-broker   rules={st['rules']} stats={st['stats']}")
+    except remote.RemoteError:
+        _emit("[status] evil-broker   unreachable")
+
+
+# --- device actions ---------------------------------------------------------------
 
 
 @app.command()
 def send(
     device: str = typer.Option(..., help="Sending device, e.g. phone."),
     topic: str = typer.Option(..., help="Topic, e.g. home/door/front/cmd."),
-    cmd: str = typer.Option(..., help="Command, e.g. unlock."),
+    cmd: str = typer.Option(..., help="Command: lock, unlock, set, test."),
+    setpoint: float | None = typer.Option(None, help="Setpoint for cmd=set."),
 ) -> None:
-    """Send a device command."""
+    """Ask a device to send a command."""
     cfg = _cfg()
     _check_device(cfg, device)
     _check_topic(cfg, topic)
-    _todo(1, "send")
+    args = {"setpoint": setpoint} if setpoint is not None else {}
+    _run_remote(lambda: actions.send(cfg, device, topic, cmd, args, _emit))
 
 
 @app.command()
-def spy(topic: str = typer.Option("home/#", help="Topic filter.")) -> None:
-    """Show what the broker sees."""
-    _check_topic(_cfg(), topic, allow_wildcard=True)
-    _todo(1, "spy")
+def spy(
+    topic: str = typer.Option("home/#", help="Topic filter."),
+    seconds: float = typer.Option(0, help="Stop after this many seconds (0 = until Ctrl+C)."),
+) -> None:
+    """Show what the broker sees (subscribes to Mosquitto itself)."""
+    cfg = _cfg()
+    _check_topic(cfg, topic, allow_wildcard=True)
+    spy_ = actions.Spy(cfg, topic, lambda t, p: _emit(actions.spy_line(t, p)))
+    _emit(f"[spy] watching {topic} on Mosquitto {cfg.mosquitto_host}:{cfg.mosquitto_port}")
+    try:
+        deadline = time.monotonic() + seconds if seconds else None
+        while deadline is None or time.monotonic() < deadline:
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        spy_.close()
+
+
+# --- attacks ------------------------------------------------------------------------
 
 
 @attack_app.command("read")
 def attack_read() -> None:
     """1. Broker reads payloads."""
-    _todo(1, "attack read")
+    cfg = _cfg()
+    _report(_run_remote(lambda: actions.attack_read(cfg, _emit)))  # type: ignore[arg-type]
 
 
 @attack_app.command("modify")
 def attack_modify(
     setpoint: float = typer.Option(30.0, help="Setpoint the broker injects."),
+    requested: float = typer.Option(21.0, help="Setpoint the phone asks for."),
 ) -> None:
     """2. Broker modifies a thermostat setpoint."""
-    _todo(1, "attack modify")
+    cfg = _cfg()
+    result = _run_remote(lambda: actions.attack_modify(cfg, _emit, setpoint, requested))
+    _report(result)  # type: ignore[arg-type]
 
 
 @attack_app.command("replay")
 def attack_replay(
-    seq: int = typer.Option(..., help="Sequence number of the captured message."),
+    seq: int | None = typer.Option(None, help="Seq of a captured message (default: capture one)."),
+    topic: str = typer.Option("home/door/front/cmd", help="Command topic to replay on."),
 ) -> None:
     """3. Broker replays a captured 'unlock front door'."""
-    _todo(1, "attack replay")
+    cfg = _cfg()
+    _check_topic(cfg, topic)
+    _report(_run_remote(lambda: actions.attack_replay(cfg, _emit, seq, topic)))  # type: ignore[arg-type]
 
 
 @attack_app.command("redirect")
 def attack_redirect(
-    from_topic: str = typer.Option(..., "--from", help="Original topic."),
-    to_topic: str = typer.Option(..., "--to", help="Topic to redirect to."),
+    from_topic: str = typer.Option("home/door/front/cmd", "--from", help="Original topic."),
+    to_topic: str = typer.Option("home/door/back/cmd", "--to", help="Topic to redirect to."),
 ) -> None:
     """4. Broker redirects a command to another device's topic."""
     cfg = _cfg()
     _check_topic(cfg, from_topic)
     _check_topic(cfg, to_topic)
-    _todo(1, "attack redirect")
+    result = _run_remote(lambda: actions.attack_redirect(cfg, _emit, from_topic, to_topic))
+    _report(result)  # type: ignore[arg-type]
 
 
 @attack_app.command("drop")
-def attack_drop(topic: str = typer.Option(..., help="Topic whose messages are dropped.")) -> None:
-    """5. Broker silently drops messages (e.g. the smoke alarm)."""
-    _check_topic(_cfg(), topic)
-    _todo(1, "attack drop")
+def attack_drop(
+    topic: str = typer.Option("home/smoke/kitchen", help="Topic whose messages are dropped."),
+) -> None:
+    """5. Broker silently drops messages (default: the smoke alarm)."""
+    cfg = _cfg()
+    _check_topic(cfg, topic)
+    _report(_run_remote(lambda: actions.attack_drop(cfg, _emit, topic)))  # type: ignore[arg-type]
 
 
 @attack_app.command("mitm-dh")
@@ -202,6 +281,9 @@ def attack_kdc_vs_directory() -> None:
     _todo(5, "attack kdc-vs-directory")
 
 
+# --- PKI / admin / log / bench (later phases) ---------------------------------------------
+
+
 @app.command()
 def pair(device: str = typer.Option(..., help="New device id, e.g. garage-lock.")) -> None:
     """Pair a new device (needs 2-of-3 admin approvals)."""
@@ -229,10 +311,63 @@ def bench_quick() -> None:
     _todo(8, "bench quick")
 
 
+# --- demo / runners -----------------------------------------------------------------------
+
+
 @demo_app.command("reset")
 def demo_reset() -> None:
-    """Reset the demo to a clean state."""
-    _todo(1, "demo reset")
+    """Reset the demo: clear attack rules and captures, reset every device."""
+    cfg = _cfg()
+    _run_remote(lambda: actions.demo_reset(cfg, _emit))
+
+
+@device_app.command("run")
+def device_run(device: str = typer.Option(..., "--id", help="Device id from home.yaml.")) -> None:
+    """Run a simulated device (normally started by docker compose)."""
+    from devices.kinds import build
+
+    cfg = _cfg()
+    _check_device(cfg, device)
+    build(cfg, device).run_forever()
+
+
+@proxy_app.command("run")
+def proxy_run() -> None:
+    """Run the evil-broker proxy (normally started by docker compose)."""
+    import asyncio
+
+    from evilbroker.proxy import serve
+
+    asyncio.run(serve(_cfg()))
+
+
+@proxy_app.command("status")
+def proxy_status() -> None:
+    """Show armed rules and counters."""
+    cfg = _cfg()
+    st = _run_remote(lambda: remote.proxy_status(cfg))
+    _emit(f"[evil-broker] {st}")
+
+
+@proxy_app.command("clear")
+def proxy_clear() -> None:
+    """Disarm every attack rule."""
+    cfg = _cfg()
+    _run_remote(lambda: remote.proxy_clear(cfg))
+    _emit("[evil-broker] all rules cleared")
+
+
+@dashboard_app.command("run")
+def dashboard_run(
+    host: str = typer.Option("127.0.0.1", help="Bind address (keep localhost)."),
+    port: int = typer.Option(8000, help="Port."),
+) -> None:
+    """Run the dashboard backend (serves the built frontend too)."""
+    import uvicorn
+
+    from dashboard.app import create_app
+
+    uvicorn.run(create_app(_cfg()), host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

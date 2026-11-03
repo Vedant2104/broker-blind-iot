@@ -8,3 +8,5 @@ node_modules
 bench/out
 claude.md
 CLAUDE.md
+dashboard/web/node_modules
+dashboard/web/dist

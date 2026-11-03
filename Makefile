@@ -1,4 +1,4 @@
-.PHONY: install test test-integration lint fmt certs up down doctor clean
+.PHONY: install test test-integration lint fmt certs up down doctor reset web clean
 
 install:
 	uv sync --extra dev
@@ -22,13 +22,19 @@ certs:
 	uv run bbiot tls init
 
 up:
-	docker compose up -d --build --wait broker
+	docker compose up -d --build --wait
 
 down:
 	docker compose down
 
 doctor:
 	uv run bbiot doctor
+
+reset:
+	uv run bbiot demo reset
+
+web:
+	cd dashboard/web && npm ci && npm run build
 
 clean:
 	docker compose down -v

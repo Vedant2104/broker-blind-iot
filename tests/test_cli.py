@@ -64,6 +64,6 @@ def test_send_rejects_unknown_topic(cfg: Config) -> None:
 
 
 def test_unimplemented_command_says_which_phase(cfg: Config) -> None:
-    result = runner.invoke(app, ["attack", "replay", "--seq", "43"])
+    result = runner.invoke(app, ["attack", "mitm-dh"])
     assert result.exit_code == 2
-    assert "phase 1" in result.output
+    assert "phase 4" in result.output

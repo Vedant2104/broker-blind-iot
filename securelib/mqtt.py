@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ssl
 import uuid
+from typing import Literal
 
 import paho.mqtt.client as mqtt
 
 from securelib.config import Config
 from securelib.tls import client_paths
+
+Target = Literal["broker", "mosquitto"]
 
 
 def tls_context(cfg: Config, identity: str, *, client_cert: bool = True) -> ssl.SSLContext:
@@ -33,3 +36,10 @@ def make_client(cfg: Config, identity: str, *, client_cert: bool = True) -> mqtt
     )
     client.tls_set_context(tls_context(cfg, identity, client_cert=client_cert))
     return client
+
+
+def address(cfg: Config, target: Target = "broker") -> tuple[str, int]:
+    """Where to connect: the broker clients use (evil proxy) or Mosquitto itself."""
+    if target == "mosquitto":
+        return cfg.mosquitto_host, cfg.mosquitto_port
+    return cfg.broker_host, cfg.broker_port

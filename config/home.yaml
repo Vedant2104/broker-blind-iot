@@ -1,29 +1,58 @@
 # The home: fixed list of devices and their topics.
 # The CLI and dashboard only accept names and topics from this file.
+
+# Where every client connects. The evil-broker proxy sits here: it passes
+# traffic through to Mosquitto unchanged unless an attack is armed.
 broker:
   host: localhost
   port: 8883
 
+# The real, stock Mosquitto behind the proxy. `bbiot spy` connects here to
+# show exactly what the broker stores and forwards.
+mosquitto:
+  host: localhost
+  port: 8884
+
+# Control API of the evil-broker proxy (arming attacks). Localhost only.
+proxy_control:
+  host: localhost
+  port: 8090
+
+# Each device process exposes a small simulator control API on its port
+# (state, events, "send"). Localhost only; it is demo harness, not protocol.
 devices:
   front-door:
     kind: lock
     label: Front door lock
+    log_name: door/front
+    control_port: 8101
     topics: {cmd: home/door/front/cmd, state: home/door/front/state}
   back-door:
     kind: lock
     label: Back door lock
+    log_name: door/back
+    control_port: 8102
     topics: {cmd: home/door/back/cmd, state: home/door/back/state}
   thermostat:
     kind: thermostat
     label: Living room thermostat
+    log_name: thermostat
+    control_port: 8103
     topics: {cmd: home/thermostat/living/cmd, state: home/thermostat/living/state}
   smoke-kitchen:
     kind: smoke
     label: Kitchen smoke sensor
-    topics: {alarm: home/smoke/kitchen, state: home/smoke/kitchen/state}
+    log_name: smoke/kitchen
+    control_port: 8104
+    topics:
+      cmd: home/smoke/kitchen/cmd
+      alarm: home/smoke/kitchen
+      state: home/smoke/kitchen/state
   phone:
     kind: app
     label: Phone app
+    log_name: phone
+    control_port: 8105
     topics: {}
 
 # Infrastructure identities that also get mTLS client certificates.
