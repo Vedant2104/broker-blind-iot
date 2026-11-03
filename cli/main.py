@@ -14,10 +14,12 @@ from enum import StrEnum
 
 import typer
 
-from cli import actions, remote
+from cli import actions, pki_actions, remote
 from cli import doctor as doctor_mod
 from securelib.config import Config, load_config
 from securelib.log import get_logger
+from securelib.pki import TrustError
+from securelib.services import ServiceError
 from securelib.tls import init_tls, tls_material_exists
 
 app = typer.Typer(help="Broker-Blind IoT command line.", no_args_is_help=True)
@@ -30,6 +32,9 @@ demo_app = typer.Typer(help="Demo helpers.", no_args_is_help=True)
 device_app = typer.Typer(help="Run a simulated device.", no_args_is_help=True)
 proxy_app = typer.Typer(help="The evil-broker proxy.", no_args_is_help=True)
 dashboard_app = typer.Typer(help="The web dashboard.", no_args_is_help=True)
+pki_app = typer.Typer(help="Offline root ceremony and commissioning.", no_args_is_help=True)
+root_app = typer.Typer(help="The offline root CA.", no_args_is_help=True)
+service_app = typer.Typer(help="Run a backend service.", no_args_is_help=True)
 
 for sub, name in [
     (tls_app, "tls"),
@@ -41,6 +46,9 @@ for sub, name in [
     (device_app, "device"),
     (proxy_app, "proxy"),
     (dashboard_app, "dashboard"),
+    (pki_app, "pki"),
+    (root_app, "root"),
+    (service_app, "run"),
 ]:
     app.add_typer(sub, name=name)
 
@@ -284,10 +292,41 @@ def attack_kdc_vs_directory() -> None:
 # --- PKI / admin / log / bench (later phases) ---------------------------------------------
 
 
+def _run_pki(fn: Callable[[], object]) -> object:
+    """Run a PKI workflow; trust failures and unreachable services exit cleanly."""
+    try:
+        return fn()
+    except TrustError as exc:
+        log.info(f"✗ REFUSED: {exc}")
+        raise typer.Exit(code=1) from exc
+    except (ServiceError, remote.RemoteError) as exc:
+        log.info(f"✗ {exc}")
+        log.info("is the stack running? try: docker compose up -d")
+        raise typer.Exit(code=1) from exc
+
+
+@pki_app.command("init")
+def pki_init(
+    force: bool = typer.Option(False, "--force", help="Replace the whole PKI (new root!)."),
+) -> None:
+    """Offline ceremony: create the root, admin keys A/B/C and the log key."""
+    cfg = _cfg()
+    _run_pki(lambda: pki_actions.pki_init(cfg, _emit, force=force))
+
+
+@pki_app.command("bootstrap")
+def pki_bootstrap() -> None:
+    """Commission every device marked commissioned in home.yaml (admins A + B)."""
+    cfg = _cfg()
+    _run_pki(lambda: pki_actions.bootstrap(cfg, _emit))
+
+
 @app.command()
-def pair(device: str = typer.Option(..., help="New device id, e.g. garage-lock.")) -> None:
-    """Pair a new device (needs 2-of-3 admin approvals)."""
-    _todo(2, "pair")
+def pair(device: str = typer.Option(..., help="Device id, e.g. garage-lock.")) -> None:
+    """Pair a device: verify its request, compare codes, ask admins to approve."""
+    cfg = _cfg()
+    _check_device(cfg, device)
+    _run_pki(lambda: pki_actions.pair(cfg, device, _emit))
 
 
 @admin_app.command("approve")
@@ -295,14 +334,45 @@ def admin_approve(
     admin: Admin = typer.Option(..., help="Approving admin."),
     action: str = typer.Option(..., help="Pending action id."),
 ) -> None:
-    """Sign a pending admin action."""
-    _todo(2, "admin approve")
+    """Sign a pending admin action; at 2 of 3 the offline root issues the cert."""
+    cfg = _cfg()
+    _run_pki(lambda: pki_actions.approve(cfg, admin.value, action, _emit))
+
+
+@admin_app.command("list")
+def admin_list() -> None:
+    """Show admin actions on the directory's bulletin board."""
+    cfg = _cfg()
+    entries = _run_pki(lambda: pki_actions.directory(cfg).list_actions())
+    for e in entries:  # type: ignore[union-attr]
+        a = e["action"]
+        signed = ", ".join(sorted(e["approvals"])) or "-"
+        _emit(
+            f"[admin] {e['id']}  {a['type']:<13} {a['device_id']:<14} {e['status']:<8} "
+            f"approved by: {signed}"
+        )
+
+
+@root_app.command("issue")
+def root_issue(action: str = typer.Option(..., help="Approved action id.")) -> None:
+    """Have the offline root sign the certificate for an approved action."""
+    cfg = _cfg()
+    _run_pki(lambda: pki_actions.issue(cfg, action, _emit))
 
 
 @log_app.command("verify")
 def log_verify() -> None:
-    """Verify transparency-log consistency and inclusion proofs."""
-    _todo(2, "log verify")
+    """Verify tree head, consistency with last run, inclusion of every directory cert."""
+    cfg = _cfg()
+    if not _run_pki(lambda: pki_actions.log_verify(cfg, _emit)):
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def keys() -> None:
+    """List what the key directory serves (device, log leaf, fingerprint)."""
+    cfg = _cfg()
+    _run_pki(lambda: pki_actions.keys_table(cfg, _emit))
 
 
 @bench_app.command("quick")
@@ -355,6 +425,22 @@ def proxy_clear() -> None:
     cfg = _cfg()
     _run_remote(lambda: remote.proxy_clear(cfg))
     _emit("[evil-broker] all rules cleared")
+
+
+@service_app.command("directory")
+def run_directory() -> None:
+    """Run the key directory (normally started by docker compose)."""
+    from directory.run import serve
+
+    serve(_cfg())
+
+
+@service_app.command("translog")
+def run_translog() -> None:
+    """Run the transparency log (normally started by docker compose)."""
+    from translog.run import serve
+
+    serve(_cfg())
 
 
 @dashboard_app.command("run")

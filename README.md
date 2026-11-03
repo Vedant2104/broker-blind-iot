@@ -12,8 +12,8 @@ command, and the overhead is measured.
 |---|---|---|
 | 0 | Scaffold: layout, compose, Mosquitto mTLS, `bbiot` CLI skeleton, tests | ✅ done |
 | 1 | Baseline devices, evil-broker proxy, attacks 1–5 succeed, Live Home | ✅ done |
-| 2 | Offline root, device certs, 2-of-3 admins, directory, transparency log | next |
-| 3 | securelib AEAD + topic/seq/time/epoch binding, replay window | |
+| 2 | Offline root, device certs, 2-of-3 admins, directory, transparency log | ✅ done |
+| 3 | securelib AEAD + topic/seq/time/epoch binding, replay window | next |
 | 4 | Centralized group keys (KDC) | |
 | 5 | Decentralized group keys (MLS via OpenMLS sidecar) | |
 | 6 | Hub, heartbeats, acks, MUD policy, quarantine | |
@@ -21,28 +21,38 @@ command, and the overhead is measured.
 | 8 | Benchmarks | |
 | 9 | Polish | |
 
-## Architecture (phase 1)
+## Architecture (phase 2)
 
 ```
- phone ──────┐                                    ┌───────────────────────┐
- front-door ─┤                                    │  Mosquitto (stock)    │
- back-door ──┼──mTLS──> evil-broker proxy ──mTLS──>  broker:8883          │
- thermostat ─┤          :8883 (host)              │  host: 127.0.0.1:8884 │
- smoke ──────┘          control API :8090         └───────────────────────┘
-                        (arms attacks)
- dashboard :8000 ── reads Mosquitto directly ("what the broker sees")
-                 └─ polls each device's simulator API ("what the device received")
+ devices ──mTLS──> evil-broker :8883 ──mTLS──> Mosquitto (stock)           host :8884
+    │              control API :8090 (arms attacks)
+    └──HTTPS──> key directory :8443 ──HTTPS──> transparency log :8444
+                (public certs only)            (RFC 6962 Merkle tree)
+
+ offline/  root key + admin keys A/B/C — used only by the one-shot ceremony
+           containers (pki-init, commission) and the admin's host CLI
+ dashboard :8000 — Mosquitto feed, device feed, trust status
 ```
 
 - **evil-broker** is the malicious broker operator. It terminates client TLS with
   the broker's own certificate and forwards to Mosquitto. Unarmed, it is a
-  transparent pass-through. Armed (through its control API) it modifies,
-  redirects, drops and replays PUBLISH packets.
-- **Devices** each run in their own container with a small **simulator control
-  API** (localhost only). `bbiot send` and the dashboard ask the *device* to send,
-  so in later phases device keys never leave the device.
-- **Message layer** (`securelib/channel.py`): in phase 1 only `mode=off` exists —
-  plaintext JSON with an unauthenticated `from/seq/ts` envelope.
+  transparent pass-through. Armed it modifies, redirects, drops and replays.
+- **Devices** each run in their own container with a localhost-only **simulator
+  control API**. `bbiot send` and the dashboard ask the *device* to send.
+- **Message layer** (`securelib/channel.py`): still `mode=off` (plaintext) until
+  phase 3, so attacks 1–5 still succeed.
+
+### Identity and PKI
+
+| Piece | What it does |
+|---|---|
+| Device keys | Each device generates Ed25519 (signing) + X25519 (key agreement) on first start, in its own key folder. Only a CSR leaves the device. |
+| Device certificate | X.509 v3 over the Ed25519 key; X25519 key in a private non-critical extension (OID under `2.25`); custom EKU marks it as a device cert. Signed by the offline Ed25519 root. |
+| Offline root | `offline/root.key`. Signs only when an add-device action carries valid signatures from **2 of 3 admins** and the CSR matches the approved hash. |
+| Admins A/B/C | Ed25519 keys; their roster is signed by the root. Approvals are signatures over a domain-separated action digest. |
+| Key directory | `device_id → certificate`. Untrusted, holds no secrets. Also a bulletin board for pending admin actions. Logs every cert it publishes. |
+| Transparency log | Append-only RFC 6962 tree; signed tree heads (log key certified by the root); inclusion and consistency proofs. |
+| Peer check (every device) | root signature ✓ → STH signature ✓ → consistent with last STH seen ✓ → inclusion proof ✓ → key pin from first sight ✓. Any failure raises an alert. |
 
 ## Layout
 
@@ -52,15 +62,16 @@ cli/         the `bbiot` CLI; cli/actions.py is shared with the dashboard
 devices/     simulated locks, thermostat, smoke sensor, phone
 evilbroker/  MQTT man-in-the-middle proxy that implements broker attacks
 hub/         MUD policy, heartbeats/acks, alerts, quarantine          (phase 6)
-directory/   key directory (public certs only)                         (phase 2)
-translog/    Merkle-tree transparency log                              (phase 2)
-rootca/      offline root CA + admin approvals                         (phase 2)
+directory/   key directory (public certs only) + admin action board
+translog/    RFC 6962 Merkle tree (merkle.py) + log service
+rootca/      offline root CA (root.py) + 2-of-3 admin approvals (approvals.py)
 dashboard/   FastAPI backend (app.py) + React frontend (web/)
 bench/       benchmarks, CSVs, charts                                  (phase 8)
 broker/      Mosquitto config (stock, mTLS only)
 config/      home.yaml: the fixed device and topic list
 tests/       pytest suite
 secrets/     generated keys and certs (git-ignored)
+offline/     offline root + admin keys (git-ignored, never mounted into the system)
 ```
 
 ## Quick start
@@ -69,13 +80,28 @@ Requirements: Docker (with Compose v2), [uv](https://docs.astral.sh/uv/), Python
 Node 18+ only if you want to run the frontend dev server.
 
 ```sh
-docker compose up -d --build     # certs, Mosquitto, evil broker, 5 devices, dashboard
+docker compose up -d --build     # TLS + offline PKI ceremony, broker, evil broker, directory,
+                                 # transparency log, 6 devices, dashboard; commissions 5
 uv sync --extra dev              # local Python env for the CLI
 uv run bbiot doctor              # ✓ mTLS round trip, ✓ no-cert client refused
 uv run bbiot status              # every device's state
+uv run bbiot log verify          # STH ✓, consistency ✓, every directory cert included ✓
 ```
 
 Dashboard: <http://localhost:8000> (Live Home).
+
+### Demo: pairing a new device (2 of 3 admins)
+
+`garage-lock` starts uncommissioned (badge "Unverified" with its pairing code).
+
+```sh
+uv run bbiot pair --device garage-lock                  # verify CSR, compare codes, post action
+uv run bbiot admin approve --admin A --action <id>      # 1/2
+uv run bbiot admin approve --admin C --action <id>      # 2/2 → root signs → directory → log
+uv run bbiot admin list                                 # the action board
+uv run bbiot keys                                       # what the directory serves
+uv run bbiot root issue --action <id>                   # refused with fewer than 2 approvals
+```
 
 ### Demo: the five broker attacks (security OFF)
 
@@ -107,11 +133,11 @@ command it ran. Container logs show the other side:
 
 ```sh
 docker compose run --rm mqtt-tools mosquitto_sub -h broker -p 8883 \
-  --cafile /certs/ca.crt --cert /certs/clients/cli.crt --key /certs/clients/cli.key \
+  --cafile /certs/cli/ca.crt --cert /certs/cli/cert.pem --key /certs/cli/key.pem \
   -t 'home/#' -v
 
 docker compose run --rm mqtt-tools mosquitto_pub -h evil-broker -p 8883 \
-  --cafile /certs/ca.crt --cert /certs/clients/phone.crt --key /certs/clients/phone.key \
+  --cafile /certs/phone/ca.crt --cert /certs/phone/cert.pem --key /certs/phone/key.pem \
   -t home/door/front/cmd -m '{"from":"phone","seq":1,"cmd":"unlock"}'
 ```
 
@@ -125,14 +151,16 @@ rewritten to a Windows path.
 | 8883 | evil-broker (where every client connects) |
 | 8884 | Mosquitto itself |
 | 8090 | evil-broker control API |
-| 8101–8105 | device simulator APIs (front-door, back-door, thermostat, smoke-kitchen, phone) |
+| 8443 | key directory (HTTPS) |
+| 8444 | transparency log (HTTPS) |
+| 8101–8106 | device simulator APIs (front-door, back-door, thermostat, smoke-kitchen, phone, garage-lock) |
 | 8000 | dashboard |
 
 ## Tests
 
 ```sh
 make test              # unit tests (or: uv run pytest -m "not integration")
-make test-integration  # needs the stack up; runs attacks 1-5 and broker checks
+make test-integration  # needs the stack up: attacks 1-5, broker, PKI and log checks
 make lint
 ```
 
@@ -156,6 +184,9 @@ cd dashboard/web && npm install && npm run dev    # http://127.0.0.1:5173, proxi
 | `BBIOT_MOSQUITTO_HOST` / `_PORT` | from home.yaml | Mosquitto itself (spy) |
 | `BBIOT_PROXY_HOST` / `_PORT` | from home.yaml | evil-broker control API |
 | `BBIOT_DEVICE_HOST` | `127.0.0.1` | device APIs; `service` = use device id as hostname |
+| `BBIOT_DIRECTORY_HOST` / `_PORT` | from home.yaml | key directory |
+| `BBIOT_TRANSLOG_HOST` / `_PORT` | from home.yaml | transparency log |
+| `BBIOT_OFFLINE_DIR` | `offline` | root + admin keys (admin machine only) |
 
 ## Dashboard security
 
@@ -167,5 +198,10 @@ shell execution, no free-text commands. Everything binds to localhost.
 
 The mTLS set up here protects the network link only — the broker (and the
 evil proxy in front of it) still sees plaintext. That is the "security OFF"
-baseline. End-to-end protection (securelib, phases 2–6) is what keeps the
-broker blind.
+baseline. End-to-end protection (securelib, phases 3–6) is what keeps the
+broker blind; phase 2 provides the verified identities it is built on.
+
+### Starting over
+
+`docker compose down -v` and deleting `secrets/` and `offline/` gives a fresh
+home: the next `docker compose up` re-runs both ceremonies.

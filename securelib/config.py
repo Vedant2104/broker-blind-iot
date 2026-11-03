@@ -8,6 +8,9 @@ Environment variables:
   BBIOT_PROXY_HOST/PORT   evil-broker control API
   BBIOT_DEVICE_HOST       host for device control APIs; "service" = use the
                           device id as hostname (inside docker compose)
+  BBIOT_DIRECTORY_HOST/PORT, BBIOT_TRANSLOG_HOST/PORT
+  BBIOT_OFFLINE_DIR       offline root + admin keys (default: ./offline);
+                          never mounted into the running system
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ class Device:
     log_name: str
     control_port: int
     topics: dict[str, str] = field(default_factory=dict)
+    commissioned: bool = True
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,11 @@ class Config:
     devices: dict[str, Device]
     services: tuple[str, ...]
     secrets_dir: Path
+    directory_host: str = "localhost"
+    directory_port: int = 8443
+    translog_host: str = "localhost"
+    translog_port: int = 8444
+    offline_dir: Path = Path("offline")
 
     @property
     def identities(self) -> list[str]:
@@ -55,6 +64,32 @@ class Config:
     @property
     def tls_dir(self) -> Path:
         return self.secrets_dir / "tls"
+
+    @property
+    def pki_public_dir(self) -> Path:
+        """Root cert, signed admin roster, log cert: public, given to everyone."""
+        return self.secrets_dir / "pki" / "public"
+
+    @property
+    def translog_key_path(self) -> Path:
+        return self.secrets_dir / "translog" / "log.key"
+
+    def device_key_dir(self, device_id: str) -> Path:
+        """A device's private identity keys (mounted only into that device)."""
+        return self.secrets_dir / "devices" / device_id
+
+    @property
+    def state_dir(self) -> Path:
+        """Pins and last-seen tree head for the CLI / dashboard."""
+        return self.secrets_dir / "state"
+
+    @property
+    def directory_url(self) -> str:
+        return f"https://{self.directory_host}:{self.directory_port}"
+
+    @property
+    def translog_url(self) -> str:
+        return f"https://{self.translog_host}:{self.translog_port}"
 
     @property
     def proxy_url(self) -> str:
@@ -83,6 +118,8 @@ def load_config(path: str | Path | None = None) -> Config:
     broker = raw.get("broker", {})
     mosq = raw.get("mosquitto", {})
     proxy = raw.get("proxy_control", {})
+    directory = raw.get("directory", {})
+    translog = raw.get("translog", {})
     devices = {
         dev_id: Device(
             id=dev_id,
@@ -91,6 +128,7 @@ def load_config(path: str | Path | None = None) -> Config:
             log_name=spec.get("log_name", dev_id),
             control_port=int(spec.get("control_port", 0)),
             topics=dict(spec.get("topics") or {}),
+            commissioned=bool(spec.get("commissioned", True)),
         )
         for dev_id, spec in (raw.get("devices") or {}).items()
     }
@@ -105,4 +143,9 @@ def load_config(path: str | Path | None = None) -> Config:
         devices=devices,
         services=tuple(raw.get("services") or ()),
         secrets_dir=Path(_env("BBIOT_SECRETS_DIR", "secrets")),
+        directory_host=_env("BBIOT_DIRECTORY_HOST", directory.get("host", "localhost")),
+        directory_port=int(_env("BBIOT_DIRECTORY_PORT", directory.get("port", 8443))),
+        translog_host=_env("BBIOT_TRANSLOG_HOST", translog.get("host", "localhost")),
+        translog_port=int(_env("BBIOT_TRANSLOG_PORT", translog.get("port", 8444))),
+        offline_dir=Path(_env("BBIOT_OFFLINE_DIR", "offline")),
     )

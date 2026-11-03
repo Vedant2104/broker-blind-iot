@@ -32,7 +32,7 @@ def test_bad_params_422(client: TestClient, setpoint) -> None:
 
 
 def test_allowlist_is_fixed() -> None:
-    assert all(name.split(".")[0] in {"phone", "attack", "demo"} for name in dash.ACTIONS)
+    assert all(name.split(".")[0] in {"phone", "attack", "demo", "log"} for name in dash.ACTIONS)
 
 
 def test_action_runs_shared_code_and_reports_command(

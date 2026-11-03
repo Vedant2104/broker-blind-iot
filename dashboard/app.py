@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import os
+import ssl
 import threading
 import time
 import uuid
@@ -26,11 +27,14 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from cli import actions, remote
+from cli import actions, pki_actions, remote
 from securelib.config import Config
 from securelib.log import get_logger
+from securelib.pki import TrustError
+from securelib.services import DirectoryClient, LogClient, ServiceError
 
 log = get_logger("dashboard")
+IDENTITY = "dashboard"
 
 
 # --- live state + broadcast -------------------------------------------------------------
@@ -45,7 +49,13 @@ class Live:
         self.alerts: deque[dict] = deque(maxlen=200)
         self.devices: dict[str, dict] = {}
         self.results: list[dict] = []
-        self.services = {"broker": "unknown", "evil-broker": "unknown"}
+        self.services = {
+            "broker": "unknown",
+            "evil-broker": "unknown",
+            "directory": "unknown",
+            "translog": "unknown",
+        }
+        self.log_size: int | None = None
         self._queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ids = itertools.count(1)
@@ -84,6 +94,7 @@ class Live:
             "security": "off",
             "keymode": "centralized",
             "epoch": None,
+            "log_size": self.log_size,
             "services": self.services,
             "devices": self.devices,
             "broker_feed": list(self.broker_feed),
@@ -114,7 +125,7 @@ def _start_broker_feed(cfg: Config, live: Live) -> None:
         # loop reconnects on its own (and re-subscribes in on_connect).
         while True:
             try:
-                spy = actions.Spy(cfg, "home/#", on_message)
+                spy = actions.Spy(cfg, "home/#", on_message, identity="dashboard")
                 break
             except OSError as exc:
                 live.services["broker"] = "down"
@@ -148,6 +159,9 @@ def _start_device_poller(cfg: Config, live: Live) -> None:
                 live.push({"type": "device", "device": snap})
             for ev in events:
                 marks[dev] = max(marks[dev], ev["id"])
+                if ev["kind"] == "alert":
+                    live.alert(ev["severity"], ev["title"], reason=ev["reason"], device=dev)
+                    continue
                 if ev["kind"] not in ("accepted", "rejected"):
                     continue
                 item = {"device": dev, **ev}
@@ -165,6 +179,7 @@ def _start_device_poller(cfg: Config, live: Live) -> None:
             live.services["evil-broker"] = "up"
         except remote.RemoteError:
             live.services["evil-broker"] = "down"
+        _poll_trust_services(cfg, live)
 
     def run() -> None:
         while True:
@@ -172,6 +187,34 @@ def _start_device_poller(cfg: Config, live: Live) -> None:
             time.sleep(0.5)
 
     threading.Thread(target=run, daemon=True, name="device-poller").start()
+
+
+_clients: dict[str, Any] = {}
+
+
+def _poll_trust_services(cfg: Config, live: Live) -> None:
+    """Directory and log liveness (+ current log size) for the status pills."""
+    try:
+        if "dir" not in _clients:
+            _clients["dir"] = DirectoryClient.connect(cfg, IDENTITY)
+            _clients["log"] = LogClient.connect(cfg, IDENTITY)
+    except (OSError, ssl.SSLError):
+        live.services["directory"] = live.services["translog"] = "down"
+        return
+    for name, probe in (
+        ("directory", lambda: _clients["dir"].list_certs()),
+        ("translog", lambda: _clients["log"].sth()),
+    ):
+        try:
+            result = probe()
+            live.services[name] = "up"
+            if name == "translog":
+                size = result["tree_size"]
+                if size != live.log_size:
+                    live.log_size = size
+                    live.push({"type": "log", "size": size})
+        except ServiceError:
+            live.services[name] = "down"
 
 
 # --- action allowlist ----------------------------------------------------------------------
@@ -249,6 +292,11 @@ ACTIONS: dict[str, ActionSpec] = {
         lambda p: f"bbiot attack drop --topic {SMOKE}",
         lambda cfg, p, emit: actions.attack_drop(cfg, emit, SMOKE),
     ),
+    "log.verify": ActionSpec(
+        NoParams,
+        lambda p: "bbiot log verify",
+        lambda cfg, p, emit: pki_actions.log_verify(cfg, emit, identity=IDENTITY),
+    ),
     "demo.reset": ActionSpec(
         NoParams, lambda p: "bbiot demo reset", lambda cfg, p, emit: actions.demo_reset(cfg, emit)
     ),
@@ -308,11 +356,15 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
 
         try:
             result = await run_in_threadpool(work)
-        except remote.RemoteError as exc:
+        except (remote.RemoteError, ServiceError, TrustError) as exc:
             emit(f"✗ {exc}")
             raise HTTPException(502, str(exc)) from exc
 
         payload: dict[str, Any] = {"run": run_id, "action": name, "command": command}
+        if isinstance(result, bool):
+            payload["ok"] = result
+            if not result:
+                live.alert("critical", f"'{command}' found problems", command=command)
         if isinstance(result, actions.AttackResult):
             payload["result"] = result.as_dict()
             live.results.append({**result.as_dict(), "security": "off", "ts": time.time()})

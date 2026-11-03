@@ -35,7 +35,7 @@ def test_tls_init_writes_certs(cfg: Config) -> None:
     result = runner.invoke(app, ["tls", "init"])
     assert result.exit_code == 0, result.output
     assert (cfg.tls_dir / "ca.crt").exists()
-    assert (cfg.tls_dir / "clients" / "phone.crt").exists()
+    assert (cfg.tls_dir / "identities" / "phone" / "cert.pem").exists()
     # Never print private key material.
     assert "PRIVATE KEY" not in result.output
 

@@ -14,7 +14,7 @@ const PAGES = [
   { name: "Benchmarks", phase: 8 },
 ];
 
-const ORDER = ["phone", "front-door", "back-door", "thermostat", "smoke-kitchen"];
+const ORDER = ["phone", "front-door", "back-door", "thermostat", "smoke-kitchen", "garage-lock"];
 
 export default function App() {
   const live = useLive();
@@ -23,7 +23,12 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <TopBar live={live} onReset={() => run("demo.reset")} resetting={busy === "demo.reset"} />
+      <TopBar
+        live={live}
+        busy={busy}
+        onReset={() => run("demo.reset")}
+        onVerifyLog={() => run("log.verify")}
+      />
 
       <nav className="flex gap-1 border-b border-line bg-panel px-4">
         {PAGES.map((p) => (

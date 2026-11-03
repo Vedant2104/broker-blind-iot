@@ -21,8 +21,15 @@ export type Alert = {
   title: string;
   [key: string]: unknown;
 };
+export type TrustInfo = {
+  fingerprint: string;
+  pairing_code: string;
+  cert: { status: "trusted" | "pending" | "invalid" | "unverified"; detail: string; leaf_index?: number };
+  peers: Record<string, { status: string; fingerprint?: string; reason?: string }>;
+};
 export type DeviceSnap = {
   id: string;
+  identity?: TrustInfo;
   kind?: string;
   label?: string;
   connected?: boolean;
@@ -44,6 +51,7 @@ export type LiveState = {
   security: string;
   keymode: string;
   epoch: number | null;
+  logSize: number | null;
   services: Record<string, string>;
   devices: Record<string, DeviceSnap>;
   brokerFeed: BrokerItem[];
@@ -58,6 +66,7 @@ const initial: LiveState = {
   security: "off",
   keymode: "centralized",
   epoch: null,
+  logSize: null,
   services: {},
   devices: {},
   brokerFeed: [],
@@ -86,6 +95,7 @@ function reducer(state: LiveState, msg: Msg): LiveState {
         security: msg.security,
         keymode: msg.keymode,
         epoch: msg.epoch,
+        logSize: msg.log_size,
         services: msg.services,
         devices: msg.devices,
         brokerFeed: cap(msg.broker_feed),
@@ -93,6 +103,8 @@ function reducer(state: LiveState, msg: Msg): LiveState {
         alerts: cap(msg.alerts),
         results: msg.results,
       };
+    case "log":
+      return { ...state, logSize: msg.size };
     case "broker":
       return { ...state, brokerFeed: cap([...state.brokerFeed, msg.item]) };
     case "device_event":

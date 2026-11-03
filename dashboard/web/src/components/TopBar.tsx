@@ -1,4 +1,4 @@
-import { RotateCcw, ShieldOff, ShieldCheck } from "lucide-react";
+import { RotateCcw, ScrollText, ShieldOff, ShieldCheck } from "lucide-react";
 import { Badge, Button, cn } from "./ui";
 import type { LiveState } from "../live";
 
@@ -50,11 +50,13 @@ function Segmented({
 export function TopBar({
   live,
   onReset,
-  resetting,
+  onVerifyLog,
+  busy,
 }: {
   live: LiveState;
   onReset: () => void;
-  resetting: boolean;
+  onVerifyLog: () => void;
+  busy: string | null;
 }) {
   const secure = live.security === "on";
   return (
@@ -84,13 +86,19 @@ export function TopBar({
       <div className="flex flex-wrap items-center gap-2">
         <Pill name="broker" status={live.services["broker"]} />
         <Pill name="evil-broker" status={live.services["evil-broker"]} />
-        <Pill name="directory" />
-        <Pill name="transparency log" />
+        <Pill name="directory" status={live.services["directory"]} />
+        <Pill
+          name={`transparency log${live.logSize != null ? ` · ${live.logSize}` : ""}`}
+          status={live.services["translog"]}
+        />
         <Badge tone="muted">epoch {live.epoch ?? "—"}</Badge>
         {!live.connected && <Badge tone="bad">dashboard offline</Badge>}
       </div>
 
-      <Button variant="outline" className="ml-auto" onClick={onReset} disabled={resetting}>
+      <Button variant="outline" className="ml-auto" onClick={onVerifyLog} disabled={!!busy} title="bbiot log verify">
+        <ScrollText className="h-4 w-4" /> Verify log
+      </Button>
+      <Button variant="outline" onClick={onReset} disabled={!!busy}>
         <RotateCcw className="h-4 w-4" /> Reset demo
       </Button>
     </header>

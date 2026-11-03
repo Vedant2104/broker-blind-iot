@@ -1,29 +1,41 @@
-# Phase 1: Mosquitto behind the evil-broker proxy, five simulated devices, dashboard.
+# Broker-Blind IoT — phase 2.
 # All host ports bind to 127.0.0.1 only.
 #
-#   clients (devices, phone, CLI) ──mTLS──> evil-broker :8883 ──mTLS──> Mosquitto (broker) :8883
-#                                                                          host: 127.0.0.1:8884
+#   devices ──mTLS──> evil-broker :8883 ──mTLS──> Mosquitto (broker)          host :8884
+#   devices ──HTTPS─> directory :8443 ──HTTPS──> translog :8444
+#
+# Secrets layout and who mounts what:
+#   ./offline/                       root + admin keys: ONLY pki-init and commission (one-shot
+#                                    "offline ceremony" containers) — never the running system
+#   ./secrets/pki/public/            root cert, signed admin roster, log cert (read-only, everyone)
+#   ./secrets/tls/identities/<name>/ each container gets only its own transport TLS identity
+#   ./secrets/devices/<id>/          each device's own identity keys (only that device)
+#   ./secrets/translog/              log signing key (only translog)
 
 name: bbiot
 
-x-bbiot: &bbiot
+x-env: &env
+  BBIOT_BROKER_HOST: evil-broker
+  BBIOT_MOSQUITTO_HOST: broker
+  BBIOT_MOSQUITTO_PORT: "8883"
+  BBIOT_PROXY_HOST: evil-broker
+  BBIOT_DIRECTORY_HOST: directory
+  BBIOT_TRANSLOG_HOST: translog
+  BBIOT_DEVICE_HOST: service
+  BBIOT_CONTROL_BIND: 0.0.0.0
+
+x-device: &device
   image: bbiot:dev
   restart: unless-stopped
+  environment: *env
   depends_on:
-    evil-broker:
-      condition: service_started
-  environment: &bbiot-env
-    BBIOT_BROKER_HOST: evil-broker
-    BBIOT_MOSQUITTO_HOST: broker
-    BBIOT_MOSQUITTO_PORT: "8883"
-    BBIOT_PROXY_HOST: evil-broker
-    BBIOT_DEVICE_HOST: service
-    BBIOT_CONTROL_BIND: 0.0.0.0
-  volumes:
-    - ./secrets:/app/secrets
+    evil-broker: {condition: service_started}
+    pki-init: {condition: service_completed_successfully}
 
 services:
-  # One-shot: create transport CA + broker/client certs in ./secrets if missing.
+  # --- one-shot setup -------------------------------------------------------------------
+
+  # Transport CA + per-identity TLS certs in ./secrets/tls (if missing).
   tls-init:
     build: .
     image: bbiot:dev
@@ -34,20 +46,53 @@ services:
       - ./secrets:/app/secrets
     restart: "no"
 
+  # Offline ceremony: root, admins A/B/C, log key (if missing).
+  pki-init:
+    image: bbiot:dev
+    command: ["pki", "init"]
+    depends_on:
+      tls-init: {condition: service_completed_successfully}
+    environment:
+      BBIOT_OFFLINE_DIR: /app/offline
+    volumes:
+      - ./offline:/app/offline
+      - ./secrets:/app/secrets
+    restart: "no"
+
+  # Commissioning ceremony: pairs every `commissioned: true` device (admins A + B).
+  # Idempotent; garage-lock is left for the live pairing demo.
+  commission:
+    image: bbiot:dev
+    command: ["pki", "bootstrap"]
+    environment:
+      <<: *env
+      BBIOT_OFFLINE_DIR: /app/offline
+    depends_on:
+      directory: {condition: service_started}
+      front-door: {condition: service_started}
+      back-door: {condition: service_started}
+      thermostat: {condition: service_started}
+      smoke-kitchen: {condition: service_started}
+      phone: {condition: service_started}
+    volumes:
+      - ./offline:/app/offline
+      - ./secrets:/app/secrets
+    restart: "no"
+
+  # --- untrusted infrastructure -----------------------------------------------------------
+
   # Stock Mosquitto, unmodified and untrusted.
   broker:
     image: eclipse-mosquitto:2.0.20
     depends_on:
-      tls-init:
-        condition: service_completed_successfully
-    ports:
-      - "127.0.0.1:8884:8883"
+      tls-init: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:8884:8883"]
     command: ["mosquitto", "-c", "/etc/bbiot/mosquitto.conf"]
     # Mount folders, not single files: Docker would otherwise create empty
     # directories in place of certs that tls-init has not written yet.
     volumes:
       - ./broker:/etc/bbiot:ro
-      - ./secrets/tls/broker:/certs:ro
+      - ./secrets/tls/identities/broker:/certs:ro
     healthcheck:
       # Fast checks while starting, then rarely (each check logs a harmless
       # "unexpected eof" line in the broker log because it opens a bare TCP socket).
@@ -65,63 +110,141 @@ services:
     restart: unless-stopped
     command: ["proxy", "run"]
     depends_on:
-      broker:
-        condition: service_healthy
+      broker: {condition: service_healthy}
     environment:
-      <<: *bbiot-env
+      <<: *env
       BBIOT_PROXY_LISTEN: 0.0.0.0
-    ports:
-      - "127.0.0.1:8883:8883"
-      - "127.0.0.1:8090:8090"
+    ports: ["127.0.0.1:8883:8883", "127.0.0.1:8090:8090"]
     volumes:
-      - ./secrets:/app/secrets
+      - ./secrets/tls/identities/broker:/app/secrets/tls/identities/broker:ro
+      - ./secrets/tls/identities/evil-proxy:/app/secrets/tls/identities/evil-proxy:ro
+
+  translog:
+    image: bbiot:dev
+    restart: unless-stopped
+    command: ["run", "translog"]
+    depends_on:
+      pki-init: {condition: service_completed_successfully}
+    environment:
+      BBIOT_LISTEN: 0.0.0.0
+      BBIOT_DATA_DIR: /app/data
+    ports: ["127.0.0.1:8444:8444"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/translog:/app/secrets/translog:ro
+      - ./secrets/tls/identities/translog:/app/secrets/tls/identities/translog:ro
+      - translog-data:/app/data
+
+  directory:
+    image: bbiot:dev
+    restart: unless-stopped
+    command: ["run", "directory"]
+    depends_on:
+      translog: {condition: service_started}
+    environment:
+      <<: *env
+      BBIOT_LISTEN: 0.0.0.0
+      BBIOT_DATA_DIR: /app/data
+    ports: ["127.0.0.1:8443:8443"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/directory:/app/secrets/tls/identities/directory:ro
+      - directory-data:/app/data
+
+  # --- devices (each sees only its own keys) ----------------------------------------------------
 
   front-door:
-    <<: *bbiot
+    <<: *device
     command: ["device", "run", "--id", "front-door"]
     ports: ["127.0.0.1:8101:8101"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/front-door:/app/secrets/tls/identities/front-door:ro
+      - ./secrets/devices/front-door:/app/secrets/devices/front-door
 
   back-door:
-    <<: *bbiot
+    <<: *device
     command: ["device", "run", "--id", "back-door"]
     ports: ["127.0.0.1:8102:8102"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/back-door:/app/secrets/tls/identities/back-door:ro
+      - ./secrets/devices/back-door:/app/secrets/devices/back-door
 
   thermostat:
-    <<: *bbiot
+    <<: *device
     command: ["device", "run", "--id", "thermostat"]
     ports: ["127.0.0.1:8103:8103"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/thermostat:/app/secrets/tls/identities/thermostat:ro
+      - ./secrets/devices/thermostat:/app/secrets/devices/thermostat
 
   smoke-kitchen:
-    <<: *bbiot
+    <<: *device
     command: ["device", "run", "--id", "smoke-kitchen"]
     ports: ["127.0.0.1:8104:8104"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/smoke-kitchen:/app/secrets/tls/identities/smoke-kitchen:ro
+      - ./secrets/devices/smoke-kitchen:/app/secrets/devices/smoke-kitchen
 
   phone:
-    <<: *bbiot
+    <<: *device
     command: ["device", "run", "--id", "phone"]
     ports: ["127.0.0.1:8105:8105"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/phone:/app/secrets/tls/identities/phone:ro
+      - ./secrets/devices/phone:/app/secrets/devices/phone
+
+  garage-lock:
+    <<: *device
+    command: ["device", "run", "--id", "garage-lock"]
+    ports: ["127.0.0.1:8106:8106"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/garage-lock:/app/secrets/tls/identities/garage-lock:ro
+      - ./secrets/devices/garage-lock:/app/secrets/devices/garage-lock
+
+  # --- dashboard + tools ------------------------------------------------------------------------
 
   dashboard:
-    <<: *bbiot
+    image: bbiot:dev
+    restart: unless-stopped
     command: ["dashboard", "run", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *env
+    depends_on:
+      evil-broker: {condition: service_started}
     ports: ["127.0.0.1:8000:8000"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/dashboard:/app/secrets/tls/identities/dashboard:ro
 
-  # `docker compose run --rm cli attack replay` — the bbiot CLI inside the network.
+  # The admin's machine: `docker compose run --rm cli <command>`.
   cli:
-    <<: *bbiot
+    image: bbiot:dev
     profiles: ["tools"]
-    restart: "no"
+    environment:
+      <<: *env
+      BBIOT_OFFLINE_DIR: /app/offline
+    volumes:
+      - ./secrets:/app/secrets
+      - ./offline:/app/offline
 
   # Plain mosquitto_pub / mosquitto_sub with a client cert, e.g.:
   #   docker compose run --rm mqtt-tools mosquitto_sub -h broker -p 8883 \
-  #     --cafile /certs/ca.crt --cert /certs/clients/cli.crt --key /certs/clients/cli.key -t 'home/#' -v
+  #     --cafile /certs/cli/ca.crt --cert /certs/cli/cert.pem --key /certs/cli/key.pem -t 'home/#' -v
   mqtt-tools:
     image: eclipse-mosquitto:2.0.20
     profiles: ["tools"]
     entrypoint: []
     user: root
     depends_on:
-      broker:
-        condition: service_healthy
+      broker: {condition: service_healthy}
     volumes:
-      - ./secrets/tls:/certs:ro
+      - ./secrets/tls/identities:/certs:ro
+
+volumes:
+  translog-data:
+  directory-data:

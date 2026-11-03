@@ -88,3 +88,8 @@ def device_send(cfg: Config, device: str, topic: str, cmd: str, args: dict | Non
 
 def device_reset(cfg: Config, device: str) -> dict:
     return _call("POST", f"{cfg.device_url(device)}/reset")
+
+
+def device_identity(cfg: Config, device: str) -> dict:
+    """The device's public identity: CSR, pairing code, fingerprint, cert status."""
+    return _call("GET", f"{cfg.device_url(device)}/identity")

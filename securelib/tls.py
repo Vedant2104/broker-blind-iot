@@ -5,10 +5,12 @@ still sees plaintext inside TLS. End-to-end protection comes in later phases,
 and device identity certificates come from the offline root (rootca/).
 
 Layout written under <secrets>/tls/:
-  ca.crt, ca.key                 transport CA
-  broker/ca.crt, broker.crt, broker.key
-                                 everything the broker mounts (one folder)
-  clients/<name>.crt, <name>.key one client cert per device/service
+  ca.crt, ca.key                      transport CA
+  identities/<name>/ca.crt            one folder per identity, so each container
+  identities/<name>/cert.pem          mounts only its own key
+  identities/<name>/key.pem
+Server identities: broker (also used by the evil broker, which *is* the broker
+operator), directory, translog. Every device/service gets a client identity.
 """
 
 from __future__ import annotations
@@ -24,7 +26,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-BROKER_DNS_NAMES = ("broker", "evil-broker", "localhost")
+# Server identity -> DNS names in its certificate (127.0.0.1 is always added).
+SERVERS: dict[str, tuple[str, ...]] = {
+    "broker": ("broker", "evil-broker", "localhost"),
+    "directory": ("directory", "localhost"),
+    "translog": ("translog", "localhost"),
+}
 VALIDITY_DAYS = 365
 
 
@@ -36,11 +43,9 @@ class ClientPaths:
 
 
 def client_paths(tls_dir: Path, name: str) -> ClientPaths:
-    return ClientPaths(
-        ca=tls_dir / "ca.crt",
-        cert=tls_dir / "clients" / f"{name}.crt",
-        key=tls_dir / "clients" / f"{name}.key",
-    )
+    """Paths of an identity's TLS material (client or server)."""
+    folder = tls_dir / "identities" / name
+    return ClientPaths(ca=folder / "ca.crt", cert=folder / "cert.pem", key=folder / "key.pem")
 
 
 def _name(cn: str) -> x509.Name:
@@ -101,6 +106,7 @@ def issue_cert(
     cn: str,
     *,
     server: bool,
+    dns_names: tuple[str, ...] = (),
 ) -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
     key = _new_key()
     eku = ExtendedKeyUsageOID.SERVER_AUTH if server else ExtendedKeyUsageOID.CLIENT_AUTH
@@ -114,7 +120,7 @@ def issue_cert(
         )
     )
     if server:
-        sans: list[x509.GeneralName] = [x509.DNSName(n) for n in BROKER_DNS_NAMES]
+        sans: list[x509.GeneralName] = [x509.DNSName(n) for n in dns_names or (cn,)]
         sans.append(x509.IPAddress(ipaddress.ip_address("127.0.0.1")))
         builder = builder.add_extension(x509.SubjectAlternativeName(sans), critical=False)
     return key, builder.sign(ca_key, hashes.SHA256())
@@ -143,7 +149,9 @@ def _write_key(path: Path, key: ec.EllipticCurvePrivateKey, owner_uid: int | Non
 
 
 def tls_material_exists(tls_dir: Path) -> bool:
-    return all((tls_dir / p).is_file() for p in ("ca.crt", "broker/ca.crt", "broker/broker.crt"))
+    return (tls_dir / "ca.crt").is_file() and all(
+        client_paths(tls_dir, name).cert.is_file() for name in SERVERS
+    )
 
 
 def init_tls(
@@ -153,9 +161,9 @@ def init_tls(
     force: bool = False,
     broker_key_uid: int | None = None,
 ) -> list[Path]:
-    """Create the transport CA, broker cert and client certs. Returns written cert paths.
+    """Create the transport CA, server certs and client certs. Returns written cert paths.
 
-    Existing material is kept unless ``force``; missing client certs are added.
+    Existing material is kept unless ``force``; missing identities are added.
     ``broker_key_uid`` chowns the broker key so the (non-root) broker can read it.
     """
     written: list[Path] = []
@@ -171,20 +179,16 @@ def init_tls(
         ca_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), password=None)
         ca_cert = x509.load_pem_x509_certificate(ca_crt_path.read_bytes())
 
-    broker_crt = tls_dir / "broker" / "broker.crt"
-    if force or not broker_crt.exists():
-        key, cert = issue_cert(ca_key, ca_cert, "broker", server=True)
-        _write_key(tls_dir / "broker" / "broker.key", key, owner_uid=broker_key_uid)
-        _write_cert(broker_crt, cert)
-        _write_cert(tls_dir / "broker" / "ca.crt", ca_cert)
-        written.append(broker_crt)
-
-    for name in clients:
+    wanted = [(name, True, names) for name, names in SERVERS.items()]
+    wanted += [(name, False, ()) for name in clients if name not in SERVERS]
+    for name, server, names in wanted:
         paths = client_paths(tls_dir, name)
         if force or not paths.cert.exists():
-            key, cert = issue_cert(ca_key, ca_cert, name, server=False)
-            _write_key(paths.key, key)
+            key, cert = issue_cert(ca_key, ca_cert, name, server=server, dns_names=names)
+            uid = broker_key_uid if name == "broker" else None
+            _write_key(paths.key, key, owner_uid=uid)
             _write_cert(paths.cert, cert)
+            _write_cert(paths.ca, ca_cert)
             written.append(paths.cert)
 
     return written

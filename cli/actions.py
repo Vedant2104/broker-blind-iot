@@ -101,8 +101,14 @@ def send(cfg: Config, device: str, topic: str, cmd: str, args: dict, emit: Emit)
 class Spy:
     """Subscribe to Mosquitto itself and report everything the broker sees."""
 
-    def __init__(self, cfg: Config, topic_filter: str, on_message: Callable[[str, bytes], None]):
-        self.client = make_client(cfg, "cli")
+    def __init__(
+        self,
+        cfg: Config,
+        topic_filter: str,
+        on_message: Callable[[str, bytes], None],
+        identity: str = "cli",
+    ):
+        self.client = make_client(cfg, identity)
         self.topic_filter = topic_filter
         self.ready = threading.Event()
         self.client.on_connect = self._on_connect

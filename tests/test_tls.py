@@ -30,13 +30,25 @@ def tls_dir(cfg: Config) -> Path:
 
 def test_chain_is_signed_by_ca(tls_dir: Path, cfg: Config) -> None:
     ca = _load(tls_dir / "ca.crt")
-    _load(tls_dir / "broker" / "broker.crt").verify_directly_issued_by(ca)
+    _load(client_paths(tls_dir, "broker").cert).verify_directly_issued_by(ca)
     for name in cfg.identities:
         _load(client_paths(tls_dir, name).cert).verify_directly_issued_by(ca)
 
 
+@pytest.mark.parametrize("server", ["directory", "translog"])
+def test_service_server_certs(tls_dir: Path, server: str) -> None:
+    cert = _load(client_paths(tls_dir, server).cert)
+    sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert server in sans.get_values_for_type(x509.DNSName)
+
+
+def test_identity_folder_holds_only_its_own_key(tls_dir: Path) -> None:
+    folder = client_paths(tls_dir, "front-door").key.parent
+    assert sorted(p.name for p in folder.iterdir()) == ["ca.crt", "cert.pem", "key.pem"]
+
+
 def test_broker_cert_names_and_usage(tls_dir: Path) -> None:
-    cert = _load(tls_dir / "broker" / "broker.crt")
+    cert = _load(client_paths(tls_dir, "broker").cert)
     sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert {"broker", "localhost"} <= set(sans.get_values_for_type(x509.DNSName))
     eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
@@ -60,8 +72,8 @@ def test_rerun_keeps_existing_material(tls_dir: Path, cfg: Config) -> None:
 
 def test_new_client_added_without_new_ca(tls_dir: Path, cfg: Config) -> None:
     before = fingerprint(tls_dir / "ca.crt")
-    written = init_tls(cfg.tls_dir, [*cfg.identities, "garage-lock"])
-    assert written == [client_paths(tls_dir, "garage-lock").cert]
+    written = init_tls(cfg.tls_dir, [*cfg.identities, "shed-sensor"])
+    assert written == [client_paths(tls_dir, "shed-sensor").cert]
     assert fingerprint(tls_dir / "ca.crt") == before
 
 
@@ -83,7 +95,8 @@ def test_private_keys_are_owner_only(tls_dir: Path) -> None:
 def _mtls_server(tls_dir: Path) -> tuple[int, threading.Thread, list[str]]:
     """A one-connection TLS server that requires a client cert from our CA."""
     ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH, cafile=str(tls_dir / "ca.crt"))
-    ctx.load_cert_chain(tls_dir / "broker" / "broker.crt", tls_dir / "broker" / "broker.key")
+    bp = client_paths(tls_dir, "broker")
+    ctx.load_cert_chain(bp.cert, bp.key)
     ctx.verify_mode = ssl.CERT_REQUIRED
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -157,5 +170,5 @@ def test_empty_placeholder_dirs_do_not_count_as_material(tmp_path: Path) -> None
     from securelib.tls import tls_material_exists
 
     (tmp_path / "ca.crt").mkdir()
-    (tmp_path / "broker" / "broker.crt").mkdir(parents=True)
+    (tmp_path / "identities" / "broker" / "cert.pem").mkdir(parents=True)
     assert not tls_material_exists(tmp_path)

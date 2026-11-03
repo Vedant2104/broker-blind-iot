@@ -10,3 +10,6 @@ claude.md
 CLAUDE.md
 dashboard/web/node_modules
 dashboard/web/dist
+
+# Offline root + admin keys (never commit, never ship in images)
+offline/

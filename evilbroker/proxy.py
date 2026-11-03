@@ -35,9 +35,9 @@ log = get_logger("evil-broker")
 
 
 def server_context(cfg: Config) -> ssl.SSLContext:
-    tls = cfg.tls_dir
-    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH, cafile=str(tls / "ca.crt"))
-    ctx.load_cert_chain(tls / "broker" / "broker.crt", tls / "broker" / "broker.key")
+    p = client_paths(cfg.tls_dir, "broker")  # the evil broker IS the broker operator
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH, cafile=str(p.ca))
+    ctx.load_cert_chain(p.cert, p.key)
     ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     return ctx

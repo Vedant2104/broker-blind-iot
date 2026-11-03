@@ -29,3 +29,6 @@ Thumbs.db
 
 # Dashboard build output
 dashboard/web/dist/
+
+# Offline root + admin keys (never commit, never ship in images)
+offline/

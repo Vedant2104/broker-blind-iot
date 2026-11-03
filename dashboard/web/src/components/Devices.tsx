@@ -32,6 +32,30 @@ function Icon({ d }: { d: DeviceSnap }) {
   return <Smartphone className={cls} />;
 }
 
+function TrustBadge({ d }: { d: DeviceSnap }) {
+  const cert = d.identity?.cert;
+  if (!cert) return <Badge tone="muted">—</Badge>;
+  const peers = Object.values(d.identity?.peers ?? {});
+  const changed = peers.some((p) => p.status === "key-changed");
+  if (cert.status === "trusted")
+    return (
+      <Badge tone={changed ? "warn" : "ok"} title={cert.detail + (changed ? " — a peer's key changed!" : "")}>
+        Trusted{cert.leaf_index != null && ` · log #${cert.leaf_index}`}
+      </Badge>
+    );
+  if (cert.status === "invalid")
+    return (
+      <Badge tone="bad" title={cert.detail}>
+        Untrusted
+      </Badge>
+    );
+  return (
+    <Badge tone="warn" title={cert.detail}>
+      Unverified · {d.identity?.pairing_code.slice(0, 9)}
+    </Badge>
+  );
+}
+
 const toneText = { ok: "text-ok", bad: "text-bad", warn: "text-warn", muted: "text-muted" };
 
 export function DeviceCard({ d, children }: { d: DeviceSnap; children?: React.ReactNode }) {
@@ -44,9 +68,7 @@ export function DeviceCard({ d, children }: { d: DeviceSnap; children?: React.Re
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <div className="truncate font-bold">{d.label ?? d.id}</div>
-            <Badge tone="warn" title="Device certificates arrive in phase 2">
-              Unverified
-            </Badge>
+            <TrustBadge d={d} />
           </div>
           <div key={text} className={cn("flash mt-1 rounded text-[22px] font-extrabold", toneText[tone])}>
             {online ? text : "offline"}
@@ -55,8 +77,11 @@ export function DeviceCard({ d, children }: { d: DeviceSnap; children?: React.Re
             <span>
               heartbeat: <span className="text-muted/70">n/a (phase 6)</span>
             </span>
-            <span>
-              key: <span className="font-mono">—</span>
+            <span title={d.identity?.fingerprint}>
+              key:{" "}
+              <span className="font-mono text-fg/80">
+                {d.identity ? d.identity.fingerprint.slice(0, 17) + "…" : "—"}
+              </span>
             </span>
             <span className={online ? "text-ok" : "text-bad"}>{online ? "● online" : "● offline"}</span>
           </div>

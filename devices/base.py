@@ -22,6 +22,7 @@ import paho.mqtt.client as mqtt
 
 from securelib.channel import Channel
 from securelib.config import Config, Device
+from securelib.identity import DeviceKeys
 from securelib.log import get_logger
 from securelib.mqtt import make_client
 
@@ -93,6 +94,17 @@ class DeviceBase:
         self.client: mqtt.Client | None = None
         self.connected = False
         self.reset_state()
+
+        # Identity keys are generated here, on the device, and never leave it.
+        self.keys, created = DeviceKeys.load_or_create(cfg.device_key_dir(dev.id), dev.id)
+        verb = "generated new" if created else "loaded"
+        self.log.info(
+            f"{verb} identity keys (Ed25519 + X25519, private keys stay on this device) "
+            f"fp={self.keys.fingerprint[:23]}… pairing code {self.keys.pairing_code}"
+        )
+        from devices.trustwatch import TrustWatch
+
+        self.trust = TrustWatch(self)
 
     # --- to override -----------------------------------------------------------
 
@@ -193,8 +205,22 @@ class DeviceBase:
             "connected": self.connected,
             "state": state,
             "security": self.channel.mode,
+            "identity": self.trust.snapshot(),
             "last_event": self.events.last_id,
         }
+
+    def identity(self) -> dict[str, Any]:
+        """Public pairing info: the CSR and the code shown on the device (QR)."""
+        return {
+            "device_id": self.dev.id,
+            "csr_pem": self.keys.csr_pem.decode(),
+            "pairing_code": self.keys.pairing_code,
+            "fingerprint": self.keys.fingerprint,
+            "cert": self.trust.own,
+        }
+
+    def alert(self, severity: str, title: str, reason: str) -> None:
+        self.events.add("alert", severity=severity, title=title, reason=reason)
 
     def serve_control(self) -> ThreadingHTTPServer:
         device = self
@@ -218,6 +244,8 @@ class DeviceBase:
                 if url.path == "/events":
                     after = int(parse_qs(url.query).get("after", ["0"])[0] or 0)
                     return self._json(200, device.events.after(after))
+                if url.path == "/identity":
+                    return self._json(200, device.identity())
                 return self._json(404, {"error": "not found"})
 
             def do_POST(self) -> None:
@@ -250,6 +278,7 @@ class DeviceBase:
 
     def run_forever(self) -> None:
         self.serve_control()
+        self.trust.start()
         self.start_mqtt()
         while True:
             time.sleep(1)

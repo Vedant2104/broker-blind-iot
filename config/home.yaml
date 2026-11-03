@@ -18,6 +18,14 @@ proxy_control:
   host: localhost
   port: 8090
 
+# Key directory and transparency log (HTTPS with transport-CA server certs).
+directory:
+  host: localhost
+  port: 8443
+translog:
+  host: localhost
+  port: 8444
+
 # Each device process exposes a small simulator control API on its port
 # (state, events, "send"). Localhost only; it is demo harness, not protocol.
 devices:
@@ -54,6 +62,14 @@ devices:
     log_name: phone
     control_port: 8105
     topics: {}
+  # Not commissioned at setup: used to demo live pairing (`bbiot pair`).
+  garage-lock:
+    kind: lock
+    label: Garage door lock
+    log_name: door/garage
+    control_port: 8106
+    commissioned: false
+    topics: {cmd: home/door/garage/cmd, state: home/door/garage/state}
 
 # Infrastructure identities that also get mTLS client certificates.
 services: [hub, cli, dashboard, evil-proxy]
