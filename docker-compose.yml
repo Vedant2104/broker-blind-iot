@@ -1,0 +1,65 @@
+# Phase 0 skeleton: TLS material + Mosquitto (mTLS).
+# Later phases add: evil-broker proxy, devices, hub, directory, translog, dashboard.
+
+name: bbiot
+
+services:
+  # One-shot: create transport CA + broker/client certs in ./secrets if missing.
+  tls-init:
+    build: .
+    image: bbiot:dev
+    command: ["tls", "init", "--if-missing"]
+    environment:
+      BBIOT_BROKER_KEY_UID: "1883"  # mosquitto user inside eclipse-mosquitto
+    volumes:
+      - ./secrets:/app/secrets
+    restart: "no"
+
+  broker:
+    image: eclipse-mosquitto:2.0.20
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8883:8883"
+    command: ["mosquitto", "-c", "/etc/bbiot/mosquitto.conf"]
+    # Mount folders, not single files: Docker would otherwise create empty
+    # directories in place of certs that tls-init has not written yet.
+    volumes:
+      - ./broker:/etc/bbiot:ro
+      - ./secrets/tls/broker:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8883 || exit 1"]
+      # Fast checks while starting, then rarely (each check logs a harmless
+      # "unexpected eof" line in the broker log because it opens a bare TCP socket).
+      start_period: 30s
+      start_interval: 1s
+      interval: 60s
+      timeout: 2s
+      retries: 3
+
+  # `docker compose run --rm cli doctor` — the bbiot CLI inside the network.
+  cli:
+    image: bbiot:dev
+    profiles: ["tools"]
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      BBIOT_BROKER_HOST: broker
+    volumes:
+      - ./secrets:/app/secrets
+
+  # Plain mosquitto_pub / mosquitto_sub with a client cert, e.g.:
+  #   docker compose run --rm mqtt-tools mosquitto_sub -h broker -p 8883 \
+  #     --cafile /certs/ca.crt --cert /certs/clients/cli.crt --key /certs/clients/cli.key -t 'home/#' -v
+  mqtt-tools:
+    image: eclipse-mosquitto:2.0.20
+    profiles: ["tools"]
+    entrypoint: []
+    user: root
+    depends_on:
+      broker:
+        condition: service_healthy
+    volumes:
+      - ./secrets/tls:/certs:ro

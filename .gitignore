@@ -1,2 +1,28 @@
+# Project notes (local only)
 claude.md
 CLAUDE.md
+
+# Generated keys and certificates — never commit
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Node
+node_modules/
+
+# Benchmark scratch output
+bench/out/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

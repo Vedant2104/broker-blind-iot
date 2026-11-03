@@ -1,0 +1,30 @@
+# The home: fixed list of devices and their topics.
+# The CLI and dashboard only accept names and topics from this file.
+broker:
+  host: localhost
+  port: 8883
+
+devices:
+  front-door:
+    kind: lock
+    label: Front door lock
+    topics: {cmd: home/door/front/cmd, state: home/door/front/state}
+  back-door:
+    kind: lock
+    label: Back door lock
+    topics: {cmd: home/door/back/cmd, state: home/door/back/state}
+  thermostat:
+    kind: thermostat
+    label: Living room thermostat
+    topics: {cmd: home/thermostat/living/cmd, state: home/thermostat/living/state}
+  smoke-kitchen:
+    kind: smoke
+    label: Kitchen smoke sensor
+    topics: {alarm: home/smoke/kitchen, state: home/smoke/kitchen/state}
+  phone:
+    kind: app
+    label: Phone app
+    topics: {}
+
+# Infrastructure identities that also get mTLS client certificates.
+services: [hub, cli, dashboard, evil-proxy]
