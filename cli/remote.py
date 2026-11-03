@@ -142,3 +142,25 @@ def kdc_leak(cfg: Config) -> dict:
 def proxy_try_loot(cfg: Config, candidates: list[str], after_capture: int = 0) -> dict:
     body = {"candidates": candidates, "after_capture": after_capture}
     return _call("POST", f"{cfg.proxy_url}/loot/try", json=body)
+
+
+def proxy_captures_with_payload(cfg: Config, topic: str, limit: int = 1) -> list[dict]:
+    params = {"topic": topic, "limit": limit, "with_payload": True}
+    return _call("GET", f"{cfg.proxy_url}/captures", params=params)
+
+
+def hub_state(cfg: Config) -> dict:
+    return device_state(cfg, "hub")["state"]
+
+
+def hub_release(cfg: Config, ident: str) -> dict:
+    return _call("POST", f"{cfg.device_url('hub')}/release", json={"device": ident})
+
+
+def device_compromise(cfg: Config, device: str, topics: list[str]) -> dict:
+    return _call("POST", f"{cfg.device_url(device)}/compromise", json={"subscribe": topics})
+
+
+def device_try_decrypt(cfg: Config, device: str, topic: str, payload_hex: str) -> dict:
+    body = {"topic": topic, "payload": payload_hex}
+    return _call("POST", f"{cfg.device_url(device)}/try-decrypt", json=body)

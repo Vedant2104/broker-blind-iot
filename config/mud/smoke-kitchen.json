@@ -1,0 +1,27 @@
+{
+  "mud_version": 1,
+  "device": "smoke-kitchen",
+  "systeminfo": "Kitchen smoke sensor",
+  "accept_commands_from": [
+    "phone",
+    "hub"
+  ],
+  "publish": [
+    "hb/smoke-kitchen",
+    "ack/smoke-kitchen",
+    "kdc/join/smoke-kitchen",
+    "mls/rejoin/smoke-kitchen",
+    "home/smoke/kitchen",
+    "home/smoke/kitchen/state"
+  ],
+  "subscribe": [
+    "kdc/announce",
+    "kdc/session/smoke-kitchen",
+    "kdc/key/smoke-kitchen",
+    "mls/commit",
+    "mls/welcome",
+    "hub/quarantine",
+    "home/smoke/kitchen/cmd",
+    "ack/hub"
+  ]
+}

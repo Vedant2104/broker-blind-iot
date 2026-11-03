@@ -84,11 +84,19 @@ def serve(cfg: Config) -> None:
             log.info(f"broker refused connection: {rc}")
             return
         c.subscribe("kdc/join/+", qos=1)
+        c.subscribe("hub/quarantine", qos=1)
         log.info(f"connected to broker {cfg.broker_host}:{cfg.broker_port} (mTLS as 'kdc')")
         kdc.announce()
 
     client.on_connect = on_connect
-    client.on_message = lambda _c, _u, m: kdc.on_message(m.topic, m.payload)
+
+    def on_message(_c, _u, m) -> None:
+        if m.topic == "hub/quarantine":
+            kdc.on_quarantine_notice(m.payload)
+        else:
+            kdc.on_message(m.topic, m.payload)
+
+    client.on_message = on_message
     client.reconnect_delay_set(1, 5)
     client.connect_async(cfg.broker_host, cfg.broker_port, keepalive=20)
     client.loop_start()

@@ -33,11 +33,11 @@ RESERVED_IDS = {
     "translog",
     "directory",
     "broker",
-    "hub",
     "cli",
     "dashboard",
     "evil-proxy",
     "kdc",
+    "counterfeit",
 }
 
 

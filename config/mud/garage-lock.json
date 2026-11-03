@@ -1,0 +1,25 @@
+{
+  "mud_version": 1,
+  "device": "garage-lock",
+  "systeminfo": "Garage door lock",
+  "accept_commands_from": [
+    "phone",
+    "hub"
+  ],
+  "publish": [
+    "hb/garage-lock",
+    "ack/garage-lock",
+    "kdc/join/garage-lock",
+    "mls/rejoin/garage-lock",
+    "home/door/garage/state"
+  ],
+  "subscribe": [
+    "kdc/announce",
+    "kdc/session/garage-lock",
+    "kdc/key/garage-lock",
+    "mls/commit",
+    "mls/welcome",
+    "hub/quarantine",
+    "home/door/garage/cmd"
+  ]
+}

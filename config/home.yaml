@@ -1,11 +1,17 @@
 # The home: fixed list of devices and their topics.
 # The CLI and dashboard only accept names and topics from this file.
 
-# Where every client connects. The evil-broker proxy sits here: it passes
-# traffic through to Mosquitto unchanged unless an attack is armed.
+# Where every client connects: the hub's policy gateway (trusted, on the LAN).
+# Behind it sits the evil-broker proxy, then Mosquitto.
 broker:
   host: localhost
   port: 8883
+
+# The evil-broker proxy itself (the untrusted broker operator). Normally reached
+# only through the hub; exposed so attack 8 can try to bypass the hub.
+evil_broker:
+  host: localhost
+  port: 8885
 
 # The real, stock Mosquitto behind the proxy. `bbiot spy` connects here to
 # show exactly what the broker stores and forwards.
@@ -68,6 +74,13 @@ devices:
     log_name: phone
     control_port: 8105
     topics: {}
+  # The hub: policy gateway (MUD), liveness monitor, quarantine, MLS group admin.
+  hub:
+    kind: hub
+    label: Home hub
+    log_name: hub
+    control_port: 8107
+    topics: {}
   # Not commissioned at setup: used to demo live pairing (`bbiot pair`).
   garage-lock:
     kind: lock
@@ -79,7 +92,8 @@ devices:
 
 # Decentralized (MLS) mode: the one member allowed to commit adds/removes.
 # Every member refuses commits from anyone else.
-group_admin: phone
+group_admin: hub
 
 # Infrastructure identities that also get mTLS client certificates.
-services: [hub, cli, dashboard, evil-proxy, kdc]
+# 'counterfeit' gets a transport (TLS) identity only — no device certificate (attack 8).
+services: [cli, dashboard, evil-proxy, kdc, counterfeit]

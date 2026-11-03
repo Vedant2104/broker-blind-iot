@@ -1,0 +1,31 @@
+{
+  "mud_version": 1,
+  "device": "phone",
+  "systeminfo": "Phone app",
+  "publish": [
+    "hb/phone",
+    "ack/phone",
+    "kdc/join/phone",
+    "mls/rejoin/phone",
+    "home/door/back/cmd",
+    "home/door/front/cmd",
+    "home/door/garage/cmd",
+    "home/smoke/kitchen/cmd",
+    "home/thermostat/living/cmd"
+  ],
+  "subscribe": [
+    "kdc/announce",
+    "kdc/session/phone",
+    "kdc/key/phone",
+    "mls/commit",
+    "mls/welcome",
+    "hub/quarantine",
+    "home/door/back/state",
+    "home/door/front/state",
+    "home/door/garage/state",
+    "home/smoke/kitchen",
+    "home/smoke/kitchen/state",
+    "home/thermostat/living/state",
+    "ack/+"
+  ]
+}

@@ -52,7 +52,9 @@ class Config:
     offline_dir: Path = Path("offline")
     kdc_host: str = "localhost"
     kdc_port: int = 8095
-    group_admin: str = "phone"
+    group_admin: str = "hub"
+    evil_host: str = "localhost"
+    evil_port: int = 8885
 
     @property
     def identities(self) -> list[str]:
@@ -158,5 +160,7 @@ def load_config(path: str | Path | None = None) -> Config:
         offline_dir=Path(_env("BBIOT_OFFLINE_DIR", "offline")),
         kdc_host=_env("BBIOT_KDC_HOST", kdc.get("host", "localhost")),
         kdc_port=int(_env("BBIOT_KDC_PORT", kdc.get("port", 8095))),
-        group_admin=str(raw.get("group_admin", "phone")),
+        group_admin=str(raw.get("group_admin", "hub")),
+        evil_host=_env("BBIOT_EVIL_HOST", raw.get("evil_broker", {}).get("host", "localhost")),
+        evil_port=int(_env("BBIOT_EVIL_PORT", raw.get("evil_broker", {}).get("port", 8885))),
     )

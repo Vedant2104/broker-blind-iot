@@ -1,0 +1,11 @@
+{
+  "mud_version": 1,
+  "device": "cli",
+  "systeminfo": "bbiot CLI (health checks only)",
+  "publish": [
+    "bbiot/selftest/#"
+  ],
+  "subscribe": [
+    "bbiot/selftest/#"
+  ]
+}

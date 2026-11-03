@@ -1,7 +1,8 @@
 # Broker-Blind IoT — phase 2.
 # All host ports bind to 127.0.0.1 only.
 #
-#   devices ──mTLS──> evil-broker :8883 ──mTLS──> Mosquitto (broker)          host :8884
+#   devices ──mTLS──> hub gateway :8883 ──> evil-broker ──mTLS──> Mosquitto   host :8884
+#                     (MUD policy, trusted)  host :8885 (bypass, attack 8)
 #   devices ──HTTPS─> directory :8443 ──HTTPS──> translog :8444
 #
 # Secrets layout and who mounts what:
@@ -16,7 +17,9 @@
 name: bbiot
 
 x-env: &env
-  BBIOT_BROKER_HOST: evil-broker
+  BBIOT_BROKER_HOST: hub
+  BBIOT_EVIL_HOST: evil-broker
+  BBIOT_EVIL_PORT: "8883"
   BBIOT_MOSQUITTO_HOST: broker
   BBIOT_MOSQUITTO_PORT: "8883"
   BBIOT_PROXY_HOST: evil-broker
@@ -31,7 +34,7 @@ x-device: &device
   restart: unless-stopped
   environment: *env
   depends_on:
-    evil-broker: {condition: service_started}
+    hub: {condition: service_started}
     pki-init: {condition: service_completed_successfully}
 
 services:
@@ -76,6 +79,7 @@ services:
       thermostat: {condition: service_started}
       smoke-kitchen: {condition: service_started}
       phone: {condition: service_started}
+      hub: {condition: service_started}
     volumes:
       - ./offline:/app/offline
       - ./secrets:/app/secrets
@@ -116,7 +120,7 @@ services:
     environment:
       <<: *env
       BBIOT_PROXY_LISTEN: 0.0.0.0
-    ports: ["127.0.0.1:8883:8883", "127.0.0.1:8090:8090"]
+    ports: ["127.0.0.1:8885:8883", "127.0.0.1:8090:8090"]
     volumes:
       - ./secrets/tls/identities/broker:/app/secrets/tls/identities/broker:ro
       - ./secrets/tls/identities/evil-proxy:/app/secrets/tls/identities/evil-proxy:ro
@@ -172,6 +176,27 @@ services:
       - ./secrets/kdc:/app/secrets/kdc:ro
       - ./secrets/tls/identities/kdc:/app/secrets/tls/identities/kdc:ro
       - kdc-data:/app/data
+
+  # The hub: policy gateway in front of the broker (host :8883), liveness monitor,
+  # quarantine, MLS group admin. A commissioned device itself.
+  hub:
+    image: bbiot:dev
+    restart: unless-stopped
+    command: ["device", "run", "--id", "hub"]
+    depends_on:
+      evil-broker: {condition: service_started}
+      pki-init: {condition: service_completed_successfully}
+    environment:
+      <<: *env
+      BBIOT_BROKER_HOST: localhost  # its own MQTT client goes through its own gateway
+      BBIOT_UPSTREAM_HOST: evil-broker
+      BBIOT_UPSTREAM_PORT: "8883"
+      BBIOT_GATEWAY_LISTEN: 0.0.0.0
+    ports: ["127.0.0.1:8883:8883", "127.0.0.1:8107:8107"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/hub:/app/secrets/tls/identities/hub:ro
+      - ./secrets/devices/hub:/app/secrets/devices/hub
 
   # --- devices (each sees only its own keys) ----------------------------------------------------
 

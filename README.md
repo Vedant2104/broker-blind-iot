@@ -16,7 +16,7 @@ command, and the overhead is measured.
 | 3 | securelib AEAD + topic/seq/time/epoch binding, replay window | ✅ done (with 4) |
 | 4 | Centralized group keys (KDC), rekey on revoke, attack 6 | ✅ done (with 3) |
 | 5 | Decentralized group keys (MLS via OpenMLS sidecar), attacks 9–10 | ✅ done |
-| 6 | Hub, heartbeats, acks, MUD policy, quarantine | next |
+| 6 | Hub, heartbeats, acks, MUD policy, quarantine | 🟡 core done (dashboard cards, integration tests, docs pending) |
 | 7 | Full dashboard | |
 | 8 | Benchmarks | |
 | 9 | Polish | |

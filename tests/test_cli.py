@@ -64,6 +64,6 @@ def test_send_rejects_unknown_topic(cfg: Config) -> None:
 
 
 def test_unimplemented_command_says_which_phase(cfg: Config) -> None:
-    result = runner.invoke(app, ["attack", "counterfeit"])
+    result = runner.invoke(app, ["bench", "quick"])
     assert result.exit_code == 2
-    assert "phase 6" in result.output
+    assert "phase 8" in result.output

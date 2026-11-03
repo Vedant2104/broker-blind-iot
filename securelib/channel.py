@@ -102,6 +102,7 @@ class Channel:
         self.requires_signature = requires_signature
         self.suite = suite
         self.seq = SeqCounter(seq_path)
+        self.last_seq: int | None = None  # seq of the last message sealed
         self.log = get_logger("securelib")
         self.opener = Opener(
             current_key=self._current_key,
@@ -132,7 +133,8 @@ class Channel:
         self._mode = value
 
     def next_seq(self) -> int:
-        return self.seq.next()
+        self.last_seq = self.seq.next()
+        return self.last_seq
 
     # --- sending ------------------------------------------------------------------------
 

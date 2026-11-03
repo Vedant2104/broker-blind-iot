@@ -56,6 +56,9 @@ class Kdc:
         self.member_serial: dict[str, int] = {}  # device -> certificate serial it joined with
         self.pending: dict[str, tuple[KdcJoin, Any]] = {}
         self.allow_unsigned: set[str] = set()
+        from hub.quarantine import NoticeTracker
+
+        self.quarantine = NoticeTracker()
         self.revoked: set[str] = set()
         self._rekey_at: float | None = None
         self.history: list[dict] = []
@@ -127,6 +130,8 @@ class Kdc:
         if msg.get("device") != dev:
             raise TrustError("hello names a different device than its topic")
         join = KdcJoin.from_hello(msg)
+        if dev in self.quarantine.quarantined:
+            raise TrustError(f"{dev} is quarantined by the hub")
         if join.auth == "unsigned" and dev not in self.allow_unsigned:
             raise TrustError("unsigned key exchange not allowed")
         peer = self.verifier.verify(dev)  # root ✓ log ✓ pin ✓ this cert not revoked ✓
@@ -159,6 +164,26 @@ class Kdc:
                 self._send_key(dev)
 
     # --- background ---------------------------------------------------------------------------
+
+    def on_quarantine_notice(self, payload: bytes) -> None:
+        """Signed by the hub (its certified key); newer versions only."""
+        try:
+            hub_key = self.verifier.verify("hub").identity.ed25519
+            changed = self.quarantine.offer(json.loads(payload), hub_key)
+        except (ValueError, TrustError, ServiceError) as exc:
+            log.info(f"✗ quarantine notice refused: {exc}")
+            return
+        if not changed:
+            return
+        with self._lock:
+            hit = sorted(d for d in self.quarantine.quarantined if d in self.members)
+            for dev in hit:
+                self.members.pop(dev, None)
+                self.member_serial.pop(dev, None)
+                self.pending.pop(dev, None)
+        if hit:
+            log.info(f"hub quarantined {', '.join(hit)} → removed from group")
+            self.rekey(f"quarantined {', '.join(hit)}")
 
     def check_revocations(self) -> None:
         """Drop members whose *current* certificate (by serial) has been revoked."""
@@ -198,6 +223,7 @@ class Kdc:
                 "epoch": self.epoch,
                 "members": sorted(self.members),
                 "revoked": sorted(self.revoked),
+                "quarantined": sorted(self.quarantine.quarantined),
                 "allow_unsigned": sorted(self.allow_unsigned),
                 "history": self.history[-20:],
             }

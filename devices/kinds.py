@@ -66,8 +66,12 @@ class SmokeSensor(DeviceBase):
     kind = "smoke"
     ALARM_SECONDS = 8
 
+    ACK_TIMEOUT = 2.0
+    RETRIES = 2
+
     def reset_state(self) -> None:
         self.alarm_until = 0.0
+        self.pending_alarms: list[dict[str, Any]] = []  # sent, waiting for the hub's ack
 
     def handle(self, topic: str, body: dict[str, Any], sender: str | None, seq: int | None) -> None:
         if body.get("cmd") != "test":
@@ -76,16 +80,59 @@ class SmokeSensor(DeviceBase):
         self.log.info(f"✓ accepted cmd=test from={sender} seq={seq} → raising test alarm")
         self.raise_alarm(test=True)
 
-    def raise_alarm(self, *, test: bool) -> None:
+    def raise_alarm(self, *, test: bool, attempt: int = 1, first_ts: int | None = None) -> None:
         self.alarm_until = time.time() + self.ALARM_SECONDS
         self.publish(self.dev.topics["alarm"], {"alarm": "smoke", "test": test})
-        self.log.info(f"🔥 ALARM published on {self.dev.topics['alarm']}")
+        self.log.info(f"🔥 ALARM published on {self.dev.topics['alarm']} (attempt {attempt})")
+        if self.channel.mode == "on":
+            self.pending_alarms.append(
+                {
+                    "seq": self.channel.last_seq,
+                    "ts_ms": first_ts or int(time.time() * 1000),
+                    "sent": time.monotonic(),
+                    "attempt": attempt,
+                    "test": test,
+                }
+            )
         self.publish_state()
+
+    def on_ack(self, acker: str, body: dict[str, Any]) -> None:
+        if acker != "hub":
+            return
+        seq = body.get("for_seq")
+        before = len(self.pending_alarms)
+        self.pending_alarms = [a for a in self.pending_alarms if a["seq"] != seq]
+        if len(self.pending_alarms) < before:
+            self.log.info(f"✓ hub acknowledged alarm (seq {seq})")
+
+    def unacked_alarms(self) -> list[dict[str, Any]]:
+        return [
+            {"seq": a["seq"], "ts_ms": a["ts_ms"]}
+            for a in self.pending_alarms
+            if a["attempt"] > self.RETRIES
+        ]
 
     def tick(self) -> None:
         if self.alarm_until and time.time() >= self.alarm_until:
             self.alarm_until = 0.0
             self.publish_state()
+        now = time.monotonic()
+        for a in list(self.pending_alarms):
+            if a["attempt"] > self.RETRIES or now - a["sent"] < self.ACK_TIMEOUT:
+                continue
+            if a["attempt"] == self.RETRIES:  # give up re-sending; heartbeats will report it
+                a["attempt"] += 1
+                self.log.info(f"✗ alarm (seq {a['seq']}) never acknowledged by the hub")
+                self.alert(
+                    "critical",
+                    "Alarm not acknowledged",
+                    "the hub never confirmed the smoke alarm",
+                    check="end-to-end ack",
+                )
+                continue
+            self.pending_alarms.remove(a)
+            self.log.info(f"no ack for alarm seq {a['seq']} — re-sending")
+            self.raise_alarm(test=a["test"], attempt=a["attempt"] + 1, first_ts=a["ts_ms"])
 
     def state(self) -> dict[str, Any]:
         return {"alarm": bool(self.alarm_until)}
@@ -128,4 +175,8 @@ KINDS: dict[str, type[DeviceBase]] = {
 
 def build(cfg: Config, device_id: str, mode: str | None = None) -> DeviceBase:
     dev = cfg.devices[device_id]
+    if dev.kind == "hub":
+        from hub.hub import Hub
+
+        return Hub(cfg, dev, mode=mode)
     return KINDS[dev.kind](cfg, dev, mode=mode)

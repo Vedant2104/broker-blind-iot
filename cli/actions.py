@@ -271,6 +271,7 @@ def attack_drop(cfg: Config, emit: Emit, topic: str, wait: float = 4.0) -> Attac
 
     remote.proxy_arm(cfg, "drop", {"topic": topic})
     _say(emit, f"armed: silently drop everything on {topic}")
+    hub_mark = _mark(cfg, "hub") if "hub" in cfg.devices else 0
     phone_mark = _mark(cfg, "phone")
     source_mark = _mark(cfg, source.id)
     try:
@@ -286,6 +287,26 @@ def attack_drop(cfg: Config, emit: Emit, topic: str, wait: float = 4.0) -> Attac
         return AttackResult("drop", BLOCKED, f"{source.label} published nothing", command)
     if received:
         return AttackResult("drop", BLOCKED, "phone still received the message", command)
+    # The broker can always drop — the question is whether anyone notices.
+    if "hub" in cfg.devices:
+        _say(emit, "waiting to see whether the hub notices...")
+
+        def noticed() -> list[dict]:
+            return [
+                e
+                for e in _events_since(cfg, "hub", hub_mark, "alert")
+                if source.id in (e.get("title", "") + e.get("reason", ""))
+                and e.get("severity") == "critical"
+            ]
+
+        alerts = _wait_for(noticed, timeout=15)
+        if alerts:
+            first = alerts[0]
+            ttd = first.get("detect_s")
+            how = f" via {first['check']}" if first.get("check") else ""
+            when = f" ({ttd:g}s after it was sent)" if isinstance(ttd, int | float) else ""
+            reason = f"broker dropped it, but the hub detected it{how}{when}: {first['title']}"
+            return AttackResult("drop", DETECTED, reason, command, {"alerts": len(alerts)})
     reason = (
         f"{source.label} published on {topic}, phone never got it and nobody was alerted "
         f"(waited {wait:g}s)"
@@ -299,6 +320,7 @@ def attack_drop(cfg: Config, emit: Emit, topic: str, wait: float = 4.0) -> Attac
 def demo_reset(cfg: Config, emit: Emit) -> None:
     remote.proxy_reset(cfg)
     emit("[demo] evil broker: rules and captures cleared")
+    release_all(cfg, emit)
     for device in cfg.devices:
         remote.device_reset(cfg, device)
         emit(f"[demo] {device}: reset")
@@ -558,3 +580,229 @@ def attack_kdc_vs_directory(cfg: Config, emit: Emit) -> AttackResult:
         "MLS secrets exist only on member devices"
     )
     return AttackResult("kdc-vs-directory", BLOCKED, reason, command, result)
+
+
+# --- quarantine ----------------------------------------------------------------------------------
+
+
+def release_all(cfg: Config, emit: Emit) -> None:
+    if "hub" not in cfg.devices:
+        return
+    with contextlib.suppress(remote.RemoteError):
+        for ident in list(remote.hub_state(cfg).get("quarantined", {})):
+            remote.hub_release(cfg, ident)
+            emit(f"[hub] released {ident} from quarantine")
+
+
+# --- attack 7 ------------------------------------------------------------------------------------
+
+
+def attack_compromised_device(cfg: Config, emit: Emit, device: str = "thermostat") -> AttackResult:
+    """7. A compromised device (holding valid keys) subscribes to the door topics."""
+    command = _cmdline("attack", "compromised-device", "--device", device)
+    doors = sorted(d.topics["cmd"] for d in cfg.devices.values() if d.kind == "lock")[:2]
+    security = security_mode(cfg)
+    mark, hub_mark = _mark(cfg, device), _mark(cfg, "hub")
+    before = remote.device_state(cfg, device)["group"].get("epoch")
+    try:
+        remote.device_compromise(cfg, device, doors)
+        _say(emit, f"{device} is compromised: it subscribes to {', '.join(doors)}")
+        send(cfg, "phone", doors[0], "unlock", {}, emit)
+        time.sleep(2.5)
+        spied = _events_since(cfg, device, mark, "spied")
+        if security == "off":
+            if spied:
+                body = spied[0].get("body", {})
+                reason = f"{device} read {len(spied)} door command(s), e.g. {body} — nobody noticed"
+                return AttackResult("compromised-device", SUCCEEDED, reason, command)
+            return AttackResult("compromised-device", BLOCKED, "nothing was read", command)
+
+        alerts = _wait_for(
+            lambda: [
+                e
+                for e in _events_since(cfg, "hub", hub_mark, "alert")
+                if e.get("title", "").startswith("QUARANTINED")
+            ],
+            timeout=8,
+        )
+        if not alerts:
+            why = f"read {len(spied)} message(s)" if spied else "no quarantine raised"
+            return AttackResult("compromised-device", SUCCEEDED, why, command)
+        _say(emit, f"hub: {alerts[0]['title']} — {alerts[0]['reason']}")
+
+        def rekeyed() -> int | None:
+            st = remote.device_state(cfg, "phone")["group"]
+            return st.get("epoch") if st.get("epoch") not in (None, before) else None
+
+        new_epoch = _wait_for(rekeyed, timeout=15)
+        _say(emit, f"group rekeyed: epoch {before} → {new_epoch}")
+        send(cfg, "phone", doors[0], "lock", {}, emit)
+        time.sleep(1.5)
+        cap = remote.proxy_captures_with_payload(cfg, doors[0], limit=1)
+        proof = (
+            remote.device_try_decrypt(cfg, device, doors[0], cap[-1]["payload"])
+            if cap
+            else {"ok": False, "reason": "no capture"}
+        )
+        if proof.get("ok"):
+            reason = f"{device} was quarantined but can still decrypt new door commands"
+            return AttackResult("compromised-device", SUCCEEDED, reason, command)
+        reason = (
+            f"hub blocked the subscription and quarantined {device} "
+            f"({len(spied)} commands read); rekey {before} → {new_epoch}; "
+            f"newest door command: {proof['reason']}"
+        )
+        return AttackResult(
+            "compromised-device",
+            BLOCKED,
+            reason,
+            command,
+            {"spied": len(spied), "epoch_before": before, "epoch_after": new_epoch},
+        )
+    finally:
+        with contextlib.suppress(remote.RemoteError):
+            remote.hub_release(cfg, device)
+            remote.device_reset(cfg, device)
+        _say(emit, f"cleanup: {device} restored and released from quarantine")
+
+
+# --- attack 8 ------------------------------------------------------------------------------------
+
+
+def _try_connect(cfg: Config, host: str, port: int, ctx) -> str:
+    """Connect with a given TLS context; return 'connected' or the failure."""
+    import paho.mqtt.client as _mqtt
+
+    done, result = threading.Event(), {}
+    c = _mqtt.Client(callback_api_version=_mqtt.CallbackAPIVersion.VERSION2)
+    c.tls_set_context(ctx)
+    c.on_connect = lambda *a: (result.setdefault("rc", a[3]), done.set())
+    try:
+        c.connect(host, port, keepalive=10)
+    except OSError as exc:
+        return f"refused during TLS handshake ({type(exc).__name__})"
+    c.loop_start()
+    done.wait(4)
+    c.disconnect()
+    c.loop_stop()
+    rc = result.get("rc")
+    return "connected" if rc is not None and not rc.is_failure else "refused (no CONNACK)"
+
+
+def attack_counterfeit(cfg: Config, emit: Emit, target: str = "front-door") -> AttackResult:
+    """8. A counterfeit device (no certificate from the bbiot root) tries to get in."""
+    import ssl
+    import tempfile
+    from pathlib import Path
+
+    from securelib.kdcproto import DeviceJoin
+    from securelib.mqtt import tls_context
+    from securelib.tls import client_paths, init_tls
+
+    command = _cmdline("attack", "counterfeit")
+    security = security_mode(cfg)
+    door = cfg.devices[target].topics["cmd"]
+    stages: list[str] = []
+    send(cfg, "phone", door, "lock", {}, emit)
+    _wait_for(lambda: remote.device_state(cfg, target)["state"].get("locked"))
+    mark = _mark(cfg, target)
+
+    def stage(msg: str) -> None:
+        stages.append(msg)
+        _say(emit, msg)
+
+    # 1. no certificate at all; 2. certificate from its own CA
+    stage(
+        "① no client certificate → "
+        + _try_connect(
+            cfg, cfg.broker_host, cfg.broker_port, tls_context(cfg, IDENTITY, client_cert=False)
+        )
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        init_tls(Path(tmp), [target])
+        rogue = client_paths(Path(tmp), target)
+        ctx = ssl.create_default_context(cafile=str(client_paths(cfg.tls_dir, IDENTITY).ca))
+        ctx.load_cert_chain(rogue.cert, rogue.key)
+        stage(
+            f"② self-made certificate claiming '{target}' → "
+            + _try_connect(cfg, cfg.broker_host, cfg.broker_port, ctx)
+        )
+
+    # 3/4. a stolen *transport* identity ('counterfeit'), but no device certificate
+    def plaintext_unlock(host: str, port: int) -> None:
+        c = make_client(cfg, "counterfeit")
+        c.connect(host, port, keepalive=10)
+        c.loop_start()
+        time.sleep(0.5)
+        c.publish(door, json.dumps({"from": "phone", "seq": 1, "cmd": "unlock"}), qos=1)
+        time.sleep(1.5)
+        c.disconnect()
+        c.loop_stop()
+
+    hub_mark = _mark(cfg, "hub") if "hub" in cfg.devices else 0
+    plaintext_unlock(cfg.broker_host, cfg.broker_port)
+    blocked = [
+        e
+        for e in _events_since(cfg, "hub", hub_mark, "alert")
+        if "counterfeit" in e.get("title", "")
+    ]
+    stage(
+        "③ transport cert via the hub, forged 'unlock' → "
+        + ("hub blocked + quarantined it (no MUD profile)" if blocked else "passed the hub")
+    )
+
+    plaintext_unlock(cfg.evil_host, cfg.evil_port)
+    rej = _rejection(cfg, target, mark)
+    unlocked = not remote.device_state(cfg, target)["state"].get("locked")
+    stage(
+        "④ bypassing the hub, straight to the broker → "
+        + ("door UNLOCKED" if unlocked else f"{target} rejected it: {rej or 'ignored'}")
+    )
+
+    if security == "on":  # impersonate the target in a KDC join (it has no device key)
+        from securelib.trust import TrustAnchors
+
+        got = threading.Event()
+        c = make_client(cfg, "counterfeit")
+        join = DeviceJoin(target)
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        fake_key, kdc_key = Ed25519PrivateKey.generate(), TrustAnchors.from_config(cfg).kdc_key
+
+        def on_msg(_c, _u, m) -> None:
+            msg = json.loads(m.payload)
+            if m.topic.endswith(f"session/{target}") and msg.get("t") == "challenge":
+                try:
+                    finish, _ = join.on_challenge(msg, kdc_key, fake_key)
+                    _c.publish(f"kdc/join/{target}", json.dumps(finish), qos=1)
+                except Exception:  # noqa: BLE001,S110 - a mismatched challenge is fine too
+                    pass
+            elif m.topic.endswith(f"key/{target}"):
+                got.set()
+
+        c.on_message = on_msg
+        c.connect(cfg.evil_host, cfg.evil_port, keepalive=10)
+        c.loop_start()
+        c.subscribe([(f"kdc/session/{target}", 1), (f"kdc/key/{target}", 1)])
+        time.sleep(0.5)
+        c.publish(f"kdc/join/{target}", json.dumps(join.hello()), qos=1)
+        got.wait(4)
+        c.disconnect()
+        c.loop_stop()
+        stage(
+            f"⑤ impersonating {target} in a KDC join → "
+            + ("GOT a group key" if got.is_set() else "KDC refused (signature ≠ certified key)")
+        )
+
+    release_all(cfg, lambda _l: None)
+    if unlocked:
+        return AttackResult(
+            "counterfeit",
+            SUCCEEDED,
+            f"counterfeit unlocked the {target}",
+            command,
+            {"stages": stages},
+        )
+    return AttackResult(
+        "counterfeit", BLOCKED, "; ".join(s[2:] for s in stages), command, {"stages": stages}
+    )

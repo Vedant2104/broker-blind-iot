@@ -129,11 +129,22 @@ def create_app(cfg: Config, broker: EvilBroker) -> FastAPI:
         return status()
 
     @app.get("/captures")
-    def captures(topic: str | None = None, seq: int | None = None, limit: int = 50) -> list[dict]:
+    def captures(
+        topic: str | None = None,
+        seq: int | None = None,
+        limit: int = 50,
+        with_payload: bool = False,
+    ) -> list[dict]:
         if topic is not None:
             check(topic)
         found = broker.captures.find(topic=topic, seq=seq)
-        return [c.summary() for c in found[-max(1, min(limit, 500)) :]]
+        out = []
+        for c in found[-max(1, min(limit, 500)) :]:
+            d = c.summary()
+            if with_payload:
+                d["payload"] = c.payload.hex()
+            out.append(d)
+        return out
 
     @app.post("/inject")
     def inject(body: InjectBody) -> dict:

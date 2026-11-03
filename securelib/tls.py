@@ -31,6 +31,7 @@ SERVERS: dict[str, tuple[str, ...]] = {
     "broker": ("broker", "evil-broker", "localhost"),
     "directory": ("directory", "localhost"),
     "translog": ("translog", "localhost"),
+    "hub": ("hub", "localhost"),  # the policy gateway every client connects to
 }
 VALIDITY_DAYS = 365
 
@@ -109,11 +110,16 @@ def issue_cert(
     dns_names: tuple[str, ...] = (),
 ) -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
     key = _new_key()
-    eku = ExtendedKeyUsageOID.SERVER_AUTH if server else ExtendedKeyUsageOID.CLIENT_AUTH
+    # Server identities may also act as clients (the hub, the evil broker upstream).
+    eku = (
+        [ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]
+        if server
+        else [ExtendedKeyUsageOID.CLIENT_AUTH]
+    )
     builder = (
         _builder(_name(cn), ca_cert.subject, key.public_key())
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(x509.ExtendedKeyUsage([eku]), critical=False)
+        .add_extension(x509.ExtendedKeyUsage(eku), critical=False)
         .add_extension(
             x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
             critical=False,
@@ -146,6 +152,16 @@ def _write_key(path: Path, key: ec.EllipticCurvePrivateKey, owner_uid: int | Non
         f.write(data)
     if owner_uid is not None and hasattr(os, "chown"):
         os.chown(path, owner_uid, owner_uid)
+
+
+def _is_server_cert(path: Path) -> bool:
+    """An identity that became a server (e.g. the hub) needs a re-issued cert."""
+    cert = x509.load_pem_x509_certificate(path.read_bytes())
+    try:
+        eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    except x509.ExtensionNotFound:
+        return False
+    return ExtendedKeyUsageOID.SERVER_AUTH in eku
 
 
 def tls_material_exists(tls_dir: Path) -> bool:
@@ -183,7 +199,7 @@ def init_tls(
     wanted += [(name, False, ()) for name in clients if name not in SERVERS]
     for name, server, names in wanted:
         paths = client_paths(tls_dir, name)
-        if force or not paths.cert.exists():
+        if force or not paths.cert.exists() or (server and not _is_server_cert(paths.cert)):
             key, cert = issue_cert(ca_key, ca_cert, name, server=server, dns_names=names)
             uid = broker_key_uid if name == "broker" else None
             _write_key(paths.key, key, owner_uid=uid)

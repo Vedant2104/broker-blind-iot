@@ -34,6 +34,14 @@ ALLOWED_COMMANDS = {"lock", "unlock", "set", "test"}
 SETPOINT_RANGE = (5.0, 35.0)
 
 
+class _Quiet:
+    def info(self, *_a: Any, **_k: Any) -> None:
+        pass
+
+
+_QUIET = _Quiet()
+
+
 class EventLog:
     """Thread-safe ring buffer of what this device saw ("What the device received")."""
 
@@ -135,6 +143,9 @@ class DeviceBase:
         )
         self._announced_epoch: int | None = None
         self._last_catch_up = 0.0
+        from devices.liveness import Liveness
+
+        self.live = Liveness(self)
         self.log.info(f"security {self.channel.mode.upper()}")
 
     def _build_mls(self):
@@ -185,7 +196,9 @@ class DeviceBase:
             return os.environ.get("BBIOT_SECURITY", "on")
 
     def _requires_signature(self, topic: str) -> bool:
-        """Commands and alarms carry the sender's Ed25519 signature."""
+        """Commands, alarms, heartbeats and acks carry the sender's Ed25519 signature."""
+        if topic.startswith(("hb/", "ack/")):
+            return True
         return any(
             topic in (d.topics.get("cmd"), d.topics.get("alarm")) for d in self.cfg.devices.values()
         )
@@ -207,17 +220,33 @@ class DeviceBase:
     def tick(self) -> None:
         """Called every second (simulated physics, timers)."""
 
+    def unacked_alarms(self) -> list[dict[str, Any]]:
+        """Alarms nobody acknowledged (reported in heartbeats)."""
+        return []
+
+    def on_ack(self, acker: str, body: dict[str, Any]) -> None:
+        """An ack addressed to this device arrived."""
+
     # --- MQTT ----------------------------------------------------------------------
 
-    def publish(self, topic: str, body: dict[str, Any], *, retain: bool = False) -> None:
+    def publish(
+        self, topic: str, body: dict[str, Any], *, retain: bool = False, quiet: bool = False
+    ) -> None:
+        log = self.channel.log
+        if quiet:  # heartbeats/acks: don't flood the log
+            self.channel.log = _QUIET
         try:
             payload = self.channel.seal(topic, body)
         except NoGroupKey as exc:
-            self.log.info(f"not sent on {topic}: {exc}")
+            if not quiet:
+                self.log.info(f"not sent on {topic}: {exc}")
             raise
+        finally:
+            self.channel.log = log
         if self.client is not None:
             self.client.publish(topic, payload, qos=1, retain=retain)
-        self.events.add("sent", topic=topic, size=len(payload), body=body)
+        if not quiet:
+            self.events.add("sent", topic=topic, size=len(payload), body=body)
 
     def publish_state(self) -> None:
         if "state" in self.dev.topics:
@@ -243,13 +272,15 @@ class DeviceBase:
                 self.log.info(f"saw epoch {header.epoch} > mine ({current}) → asking the KDC")
                 self.group.rejoin()
 
-    def _publish_json(self, topic: str, msg: dict) -> None:
+    def _publish_json(self, topic: str, msg: dict, retain: bool = False) -> None:
         """Key-exchange messages: plain JSON, public values only."""
         if self.client is not None:
-            self.client.publish(topic, json.dumps(msg, separators=(",", ":")), qos=1)
+            payload = json.dumps(msg, separators=(",", ":"))
+            self.client.publish(topic, payload, qos=1, retain=retain)
 
     def _housekeeping(self) -> None:
         self.group.tick()
+        self.live.tick()
         if self.mls is not None and self.connected and self.trust.trusted:
             self.mls.tick()
         active = self.channel.group
@@ -264,6 +295,7 @@ class DeviceBase:
             return
         self.connected = True
         extra = self.mls.subscriptions() if self.mls is not None else []
+        extra += self.live.subscriptions()
         for topic in self.subscriptions() + self.group.subscriptions() + extra:
             client.subscribe(topic, qos=1)
         self.log.info(
@@ -284,7 +316,14 @@ class DeviceBase:
             if self.mls is not None:
                 self.mls.handle(msg.topic, msg.payload)
             return
+        if msg.topic == "hub/quarantine":
+            self.live.on_quarantine_notice(msg.payload)
+            return
         opened = self.channel.open(msg.topic, msg.payload)
+        if opened.ok:
+            denied = self.live.unauthorized(msg.topic, opened.sender)
+            if denied:
+                opened.ok, opened.reason = False, denied
         if not opened.ok and (opened.reason or "").startswith("wrong epoch"):
             self._maybe_catch_up(msg.payload)
         if not opened.ok:
@@ -303,8 +342,18 @@ class DeviceBase:
             signed=opened.signed,
             body=opened.body,
         )
+        if self.live.is_spied(msg.topic):
+            self.live.spied += 1
+            self.log.info(f"☠ (compromised) read {opened.body} on {msg.topic}")
+            self.events.add("spied", topic=msg.topic, body=opened.body)
+            return
+        if msg.topic.startswith("ack/"):
+            self.live.on_ack(msg.topic.split("/", 1)[1], opened.body)
+            return
         with self.lock:
             self.handle(msg.topic, opened.body, opened.sender, opened.seq)
+        if msg.topic == self.dev.topics.get("cmd"):
+            self.live.send_ack(msg.topic, opened.sender, opened.seq, opened.body.get("cmd"))
 
     def start_mqtt(self) -> None:
         client = make_client(self.cfg, self.dev.id)
@@ -325,6 +374,7 @@ class DeviceBase:
             self.publish(topic, body)
         except NoGroupKey as exc:
             raise SendError(str(exc)) from exc
+        self.live.on_sent_command(topic, cmd, self.channel.last_seq)
         return body
 
     def set_security(self, mode: str) -> None:
@@ -336,6 +386,7 @@ class DeviceBase:
             self.publish_state()
 
     def reset(self) -> None:
+        self.live.compromised, self.live.spied = [], 0
         with self.lock:
             self.reset_state()
         self.log.info("reset to initial state")
@@ -352,6 +403,8 @@ class DeviceBase:
             "state": state,
             "security": self.channel.mode,
             "keymode": self.channel.keymode,
+            "quarantined": sorted(self.live.quarantine.quarantined),
+            "compromised": self.live.compromised,
             "group": (self.channel.group or self.group).status(),
             "groups": {name: g.status() for name, g in self.channel.groups.items()},
             "identity": self.trust.snapshot(),
@@ -368,8 +421,8 @@ class DeviceBase:
             "cert": self.trust.own,
         }
 
-    def alert(self, severity: str, title: str, reason: str) -> None:
-        self.events.add("alert", severity=severity, title=title, reason=reason)
+    def alert(self, severity: str, title: str, reason: str, **details: Any) -> None:
+        self.events.add("alert", severity=severity, title=title, reason=reason, **details)
 
     def serve_control(self) -> ThreadingHTTPServer:
         device = self
@@ -423,6 +476,16 @@ class DeviceBase:
                     except ValueError as exc:
                         return self._json(422, {"error": str(exc)})
                     return self._json(200, device.snapshot())
+                if url.path == "/compromise":
+                    topics = [str(t) for t in data.get("subscribe", [])][:10]
+                    device.live.compromise(topics)
+                    return self._json(200, {"compromised": topics})
+                if url.path == "/try-decrypt":
+                    try:
+                        payload = bytes.fromhex(str(data.get("payload", "")))
+                    except ValueError:
+                        return self._json(422, {"error": "payload must be hex"})
+                    return self._json(200, device.live.try_decrypt(str(data.get("topic")), payload))
                 if url.path == "/mls-rejoin":
                     if device.mls is None:
                         return self._json(422, {"error": "MLS not available"})

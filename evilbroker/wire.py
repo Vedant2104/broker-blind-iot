@@ -146,3 +146,54 @@ def encode_publish(p: Publish, v5: bool) -> bytes:
 def encode_puback(packet_id: int) -> bytes:
     """PUBACK with success (valid for v3.1.1 and v5: reason code may be omitted)."""
     return bytes([PUBACK << 4, 2]) + packet_id.to_bytes(2, "big")
+
+
+# --- SUBSCRIBE / SUBACK (used by the hub's policy gateway) ---------------------------------
+
+SUBSCRIBE, SUBACK = 8, 9
+SUBACK_FAILURE = 0x80  # v3.1.1 "failure"; v5 "unspecified error"
+
+
+@dataclass(frozen=True)
+class Subscribe:
+    packet_id: int
+    filters: list[tuple[str, int]]  # (topic filter, options byte)
+    properties: bytes = b""
+
+
+def parse_subscribe(raw: bytes, v5: bool) -> Subscribe:
+    body = _body(raw)
+    packet_id = int.from_bytes(body[0:2], "big")
+    pos, props = 2, b""
+    if v5:
+        decoded = decode_varint(body, pos)
+        if decoded is None:
+            raise MalformedPacket("truncated v5 properties")
+        plen, after = decoded
+        props = body[pos : after + plen]
+        pos = after + plen
+    filters = []
+    while pos < len(body):
+        n = int.from_bytes(body[pos : pos + 2], "big")
+        if pos + 2 + n + 1 > len(body):
+            raise MalformedPacket("subscription overruns packet")
+        filters.append((body[pos + 2 : pos + 2 + n].decode("utf-8"), body[pos + 2 + n]))
+        pos += 3 + n
+    if not filters:
+        raise MalformedPacket("SUBSCRIBE without topic filters")
+    return Subscribe(packet_id, filters, props)
+
+
+def encode_subscribe(s: Subscribe, v5: bool) -> bytes:
+    body = bytearray(s.packet_id.to_bytes(2, "big"))
+    if v5:
+        body += s.properties or b"\x00"
+    for flt, opts in s.filters:
+        b = flt.encode("utf-8")
+        body += len(b).to_bytes(2, "big") + b + bytes([opts])
+    return bytes([SUBSCRIBE << 4 | 0x02]) + encode_varint(len(body)) + bytes(body)
+
+
+def encode_suback(packet_id: int, codes: list[int], v5: bool) -> bytes:
+    body = packet_id.to_bytes(2, "big") + (b"\x00" if v5 else b"") + bytes(codes)
+    return bytes([SUBACK << 4]) + encode_varint(len(body)) + body

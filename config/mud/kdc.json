@@ -1,0 +1,14 @@
+{
+  "mud_version": 1,
+  "device": "kdc",
+  "systeminfo": "Key Distribution Center",
+  "publish": [
+    "kdc/announce",
+    "kdc/session/+",
+    "kdc/key/+"
+  ],
+  "subscribe": [
+    "kdc/join/+",
+    "hub/quarantine"
+  ]
+}

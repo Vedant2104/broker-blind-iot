@@ -1,0 +1,25 @@
+{
+  "mud_version": 1,
+  "device": "back-door",
+  "systeminfo": "Back door lock",
+  "accept_commands_from": [
+    "phone",
+    "hub"
+  ],
+  "publish": [
+    "hb/back-door",
+    "ack/back-door",
+    "kdc/join/back-door",
+    "mls/rejoin/back-door",
+    "home/door/back/state"
+  ],
+  "subscribe": [
+    "kdc/announce",
+    "kdc/session/back-door",
+    "kdc/key/back-door",
+    "mls/commit",
+    "mls/welcome",
+    "hub/quarantine",
+    "home/door/back/cmd"
+  ]
+}

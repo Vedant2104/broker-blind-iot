@@ -29,6 +29,7 @@ class TrustWatch:
         self.own: dict[str, Any] = {"status": "unverified", "detail": "not checked yet"}
         self.peers: dict[str, dict[str, Any]] = {}
         self._peer_keys: dict[str, Ed25519PublicKey] = {}
+        self.quarantined: dict[str, str] = {}
         self._verifier: PeerVerifier | None = None
         self._last_problem: str | None = None
         self._wake = threading.Event()
@@ -42,11 +43,31 @@ class TrustWatch:
         return self.own["status"] == "trusted"
 
     def peer_key(self, device_id: str) -> Ed25519PublicKey | None:
-        """Signing key of a peer that passed every check (root, log, pin, not revoked)."""
+        """Signing key of a peer that passed every check (root, log, pin, not revoked,
+        not quarantined by the hub)."""
+        if device_id in self.quarantined:
+            return None
         return self._peer_keys.get(device_id)
 
+    def set_quarantined(self, quarantined: dict[str, str]) -> None:
+        for dev in set(quarantined) - set(self.quarantined):
+            self.peers[dev] = {
+                **self.peers.get(dev, {}),
+                "status": "quarantined",
+                "reason": quarantined[dev],
+            }
+        released = set(self.quarantined) - set(quarantined)
+        self.quarantined = dict(quarantined)
+        for dev in released:
+            self.peers.pop(dev, None)  # re-verified on the next check
+        self.poke()
+
     def trusted_peers(self) -> list[str]:
-        return sorted(d for d, p in self.peers.items() if p.get("status") == "trusted")
+        return sorted(
+            d
+            for d, p in self.peers.items()
+            if p.get("status") == "trusted" and d not in self.quarantined
+        )
 
     def kdc_key(self) -> Ed25519PublicKey | None:
         try:
@@ -129,6 +150,8 @@ class TrustWatch:
 
     def _check_peer(self, v: PeerVerifier, dev_id: str, entry: dict, revoked: dict) -> None:
         before = self.peers.get(dev_id, {}).get("status")
+        if dev_id in self.quarantined:
+            return
         try:
             peer = v.verify(dev_id, entry, revoked)
             self._peer_keys[dev_id] = peer.identity.ed25519

@@ -1,0 +1,25 @@
+{
+  "mud_version": 1,
+  "device": "front-door",
+  "systeminfo": "Front door lock",
+  "accept_commands_from": [
+    "phone",
+    "hub"
+  ],
+  "publish": [
+    "hb/front-door",
+    "ack/front-door",
+    "kdc/join/front-door",
+    "mls/rejoin/front-door",
+    "home/door/front/state"
+  ],
+  "subscribe": [
+    "kdc/announce",
+    "kdc/session/front-door",
+    "kdc/key/front-door",
+    "mls/commit",
+    "mls/welcome",
+    "hub/quarantine",
+    "home/door/front/cmd"
+  ]
+}

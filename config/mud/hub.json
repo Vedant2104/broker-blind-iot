@@ -1,0 +1,31 @@
+{
+  "mud_version": 1,
+  "device": "hub",
+  "systeminfo": "Home hub",
+  "publish": [
+    "hb/hub",
+    "ack/hub",
+    "kdc/join/hub",
+    "mls/rejoin/hub",
+    "home/door/back/cmd",
+    "home/door/front/cmd",
+    "home/door/garage/cmd",
+    "home/smoke/kitchen/cmd",
+    "home/thermostat/living/cmd",
+    "mls/commit",
+    "mls/welcome",
+    "hub/quarantine"
+  ],
+  "subscribe": [
+    "kdc/announce",
+    "kdc/session/hub",
+    "kdc/key/hub",
+    "mls/commit",
+    "mls/welcome",
+    "hub/quarantine",
+    "home/#",
+    "hb/+",
+    "ack/+",
+    "mls/rejoin/+"
+  ]
+}

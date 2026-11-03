@@ -37,6 +37,7 @@ root_app = typer.Typer(help="The offline root CA.", no_args_is_help=True)
 service_app = typer.Typer(help="Run a backend service.", no_args_is_help=True)
 security_app = typer.Typer(help="End-to-end protection ON / OFF.", no_args_is_help=True)
 kdc_app = typer.Typer(help="Key Distribution Center (centralized mode).", no_args_is_help=True)
+quarantine_app = typer.Typer(help="Hub quarantine (MUD policy violations).", no_args_is_help=True)
 keymode_app = typer.Typer(
     help="Group key mode: centralized (KDC) / decentralized (MLS).", no_args_is_help=True
 )
@@ -56,6 +57,7 @@ for sub, name in [
     (service_app, "run"),
     (security_app, "security"),
     (kdc_app, "kdc"),
+    (quarantine_app, "quarantine"),
     (keymode_app, "keymode"),
 ]:
     app.add_typer(sub, name=name)
@@ -278,14 +280,17 @@ def attack_compromised_device(
     device: str = typer.Option("thermostat", help="Device that turns malicious."),
 ) -> None:
     """7. Compromised device subscribes to door topics -> quarantine + rekey."""
-    _check_device(_cfg(), device)
-    _todo(6, "attack compromised-device")
+    cfg = _cfg()
+    _check_device(cfg, device)
+    result = _run_remote(lambda: actions.attack_compromised_device(cfg, _emit, device))
+    _report(result)  # type: ignore[arg-type]
 
 
 @attack_app.command("counterfeit")
 def attack_counterfeit() -> None:
-    """8. Counterfeit device tries to join."""
-    _todo(6, "attack counterfeit")
+    """8. Counterfeit device (no root-signed certificate) tries to get in."""
+    cfg = _cfg()
+    _report(_run_remote(lambda: actions.attack_counterfeit(cfg, _emit)))  # type: ignore[arg-type]
 
 
 @attack_app.command("swap-key")
@@ -432,6 +437,38 @@ def keymode_status() -> None:
             _emit(f"[demo]   {dev:<14} {' | '.join(parts)}")
         except remote.RemoteError:
             _emit(f"[demo]   {dev:<14} unreachable")
+
+
+@quarantine_app.command("list")
+def quarantine_list() -> None:
+    """Who the hub has quarantined, and why."""
+    cfg = _cfg()
+    q = _run_remote(lambda: remote.hub_state(cfg)["quarantined"])
+    for ident, why in (q or {}).items():  # type: ignore[union-attr]
+        _emit(f"[hub] {ident}: {why}")
+    if not q:
+        _emit("[hub] nobody is quarantined")
+
+
+@quarantine_app.command("release")
+def quarantine_release(device: str = typer.Option(..., help="Identity to release.")) -> None:
+    """Lift a quarantine (after investigating)."""
+    cfg = _cfg()
+    r = _run_remote(lambda: remote.hub_release(cfg, device))
+    _emit(f"[hub] {device}: {'released' if r['released'] else 'was not quarantined'}")  # type: ignore[index]
+
+
+@app.command()
+def liveness() -> None:
+    """Heartbeat ages and dropped-message counts as the hub sees them."""
+    cfg = _cfg()
+    live = _run_remote(lambda: remote.hub_state(cfg)["liveness"])
+    for dev, s in sorted(live.items()):  # type: ignore[union-attr]
+        late = " LATE" if s["heartbeat_late"] else ""
+        _emit(
+            f"[hub] {dev:<14} heartbeat {s['heartbeat_age']}s ago{late}  "
+            f"seq {s['highest_seq']}  dropped {s['dropped']}"
+        )
 
 
 @kdc_app.command("status")

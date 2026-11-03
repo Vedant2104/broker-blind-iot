@@ -85,3 +85,20 @@ def test_qos3_rejected() -> None:
     raw = bytes([PUBLISH << 4 | 0b0110]) + b"\x03\x00\x01t"
     with pytest.raises(MalformedPacket):
         parse_publish(raw, False)
+
+
+@pytest.mark.parametrize("v5", [False, True])
+def test_subscribe_roundtrip(v5: bool) -> None:
+    from evilbroker.wire import Subscribe, encode_subscribe, parse_subscribe
+
+    s = Subscribe(9, [("home/door/+/cmd", 1), ("hb/#", 0)], b"\x00" if v5 else b"")
+    raw = encode_subscribe(s, v5)
+    assert packet_type(raw) == 8
+    assert parse_subscribe(raw, v5) == s
+
+
+def test_suback() -> None:
+    from evilbroker.wire import encode_suback
+
+    assert encode_suback(9, [1, 0x80], False) == b"\x90\x04\x00\x09\x01\x80"
+    assert encode_suback(9, [0x80], True) == b"\x90\x04\x00\x09\x00\x80"

@@ -1,0 +1,25 @@
+{
+  "mud_version": 1,
+  "device": "thermostat",
+  "systeminfo": "Living room thermostat",
+  "accept_commands_from": [
+    "phone",
+    "hub"
+  ],
+  "publish": [
+    "hb/thermostat",
+    "ack/thermostat",
+    "kdc/join/thermostat",
+    "mls/rejoin/thermostat",
+    "home/thermostat/living/state"
+  ],
+  "subscribe": [
+    "kdc/announce",
+    "kdc/session/thermostat",
+    "kdc/key/thermostat",
+    "mls/commit",
+    "mls/welcome",
+    "hub/quarantine",
+    "home/thermostat/living/cmd"
+  ]
+}
