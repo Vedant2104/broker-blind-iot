@@ -43,6 +43,12 @@ function TrustBadge({ d }: { d: DeviceSnap }) {
         Trusted{cert.leaf_index != null && ` · log #${cert.leaf_index}`}
       </Badge>
     );
+  if (cert.status === "revoked")
+    return (
+      <Badge tone="bad" title={cert.detail}>
+        Revoked
+      </Badge>
+    );
   if (cert.status === "invalid")
     return (
       <Badge tone="bad" title={cert.detail}>
@@ -76,6 +82,9 @@ export function DeviceCard({ d, children }: { d: DeviceSnap; children?: React.Re
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-muted">
             <span>
               heartbeat: <span className="text-muted/70">n/a (phase 6)</span>
+            </span>
+            <span title="group key epoch this device holds">
+              epoch: <span className="font-mono text-fg/80">{d.group?.epoch ?? "—"}</span>
             </span>
             <span title={d.identity?.fingerprint}>
               key:{" "}

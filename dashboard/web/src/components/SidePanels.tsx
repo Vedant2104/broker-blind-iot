@@ -10,6 +10,11 @@ const ATTACKS = [
   { id: "replay", name: "3 · Replay unlock", hint: "Re-send a captured 'unlock front door'" },
   { id: "redirect", name: "4 · Redirect", hint: "Front-door unlock → back door topic" },
   { id: "drop", name: "5 · Drop smoke alarm", hint: "Alarm silently discarded" },
+  {
+    id: "mitm_dh",
+    name: "6 · MITM key exchange",
+    hint: "OFF: unsigned DH, group key stolen · ON: signed DH, caught",
+  },
 ];
 
 const outcomeTone = { SUCCEEDED: "bad", BLOCKED: "ok", DETECTED: "warn" } as const;
@@ -25,14 +30,15 @@ export function AttackPanel({
   results: AttackResult[];
   console: ConsoleLine[];
 }) {
-  const latest = (id: string) => [...results].reverse().find((r) => r.attack === id);
+  const latest = (id: string) =>
+    [...results].reverse().find((r) => r.attack === id.replace("_", "-"));
   const lastRun = console.length ? console[console.length - 1].run : null;
   const lines = console.filter((c) => c.run === lastRun);
   const command = lines[0]?.line.replace(/^\$ /, "");
 
   return (
     <Card className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-      <CardHeader title="Broker attacks" right={<span className="text-[13px] text-muted">6–10 in later phases</span>} />
+      <CardHeader title="Broker attacks" right={<span className="text-[13px] text-muted">7–10 in later phases</span>} />
       <div className="space-y-2 p-3">
         {ATTACKS.map((a) => {
           const r = latest(a.id);
@@ -44,7 +50,11 @@ export function AttackPanel({
                   {r ? r.reason : a.hint}
                 </div>
               </div>
-              {r && <Badge className="shrink-0" tone={outcomeTone[r.outcome]}>{r.outcome === "SUCCEEDED" ? "Succeeded" : r.outcome === "BLOCKED" ? "Blocked" : "Detected"}</Badge>}
+              {r && (
+                <Badge className="shrink-0" tone={outcomeTone[r.outcome]}>{r.outcome === "SUCCEEDED" ? "Succeeded" : r.outcome === "BLOCKED" ? "Blocked" : "Detected"}
+                  {r.security && ` · ${r.security.toUpperCase()}`}
+                </Badge>
+              )}
               <Button
                 variant="danger"
                 className="shrink-0 px-2.5 py-1.5"

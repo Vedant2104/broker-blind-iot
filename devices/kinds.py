@@ -126,6 +126,6 @@ KINDS: dict[str, type[DeviceBase]] = {
 }
 
 
-def build(cfg: Config, device_id: str, mode: str = "off") -> DeviceBase:
+def build(cfg: Config, device_id: str, mode: str | None = None) -> DeviceBase:
     dev = cfg.devices[device_id]
     return KINDS[dev.kind](cfg, dev, mode=mode)

@@ -50,6 +50,8 @@ class Config:
     translog_host: str = "localhost"
     translog_port: int = 8444
     offline_dir: Path = Path("offline")
+    kdc_host: str = "localhost"
+    kdc_port: int = 8095
 
     @property
     def identities(self) -> list[str]:
@@ -92,6 +94,10 @@ class Config:
         return f"https://{self.translog_host}:{self.translog_port}"
 
     @property
+    def kdc_url(self) -> str:
+        return f"http://{self.kdc_host}:{self.kdc_port}"
+
+    @property
     def proxy_url(self) -> str:
         return f"http://{self.proxy_host}:{self.proxy_port}"
 
@@ -120,6 +126,7 @@ def load_config(path: str | Path | None = None) -> Config:
     proxy = raw.get("proxy_control", {})
     directory = raw.get("directory", {})
     translog = raw.get("translog", {})
+    kdc = raw.get("kdc", {})
     devices = {
         dev_id: Device(
             id=dev_id,
@@ -148,4 +155,6 @@ def load_config(path: str | Path | None = None) -> Config:
         translog_host=_env("BBIOT_TRANSLOG_HOST", translog.get("host", "localhost")),
         translog_port=int(_env("BBIOT_TRANSLOG_PORT", translog.get("port", 8444))),
         offline_dir=Path(_env("BBIOT_OFFLINE_DIR", "offline")),
+        kdc_host=_env("BBIOT_KDC_HOST", kdc.get("host", "localhost")),
+        kdc_port=int(_env("BBIOT_KDC_PORT", kdc.get("port", 8095))),
     )

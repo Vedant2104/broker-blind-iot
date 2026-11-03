@@ -28,6 +28,7 @@ export default function App() {
         busy={busy}
         onReset={() => run("demo.reset")}
         onVerifyLog={() => run("log.verify")}
+        onSecurity={(mode) => run(`security.${mode}`)}
       />
 
       <nav className="flex gap-1 border-b border-line bg-panel px-4">

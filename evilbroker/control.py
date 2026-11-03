@@ -28,6 +28,10 @@ class ModifyBody(BaseModel):
     setpoint: float = Field(ge=-50, le=100)
 
 
+class DeviceBody(BaseModel):
+    device: str
+
+
 class InjectBody(BaseModel):
     capture_id: int
 
@@ -62,8 +66,35 @@ def create_app(cfg: Config, broker: EvilBroker) -> FastAPI:
         broker.rules.modify[body.topic] = body.setpoint
         return status()
 
+    @app.put("/rules/mitm-dh")
+    def arm_mitm(body: DeviceBody) -> dict:
+        from evilbroker.mitm_dh import DhMitm
+
+        if body.device not in cfg.devices:
+            raise HTTPException(422, f"unknown device {body.device!r}")
+        broker.rules.mitm[body.device] = DhMitm(body.device)
+        return status()
+
+    @app.get("/mitm")
+    def mitm_status() -> dict:
+        """Which epochs the broker has stolen keys for (never the keys)."""
+        broker.collect_loot()
+        notes = {d: m.notes for d, m in broker.rules.mitm.items()}
+        return {
+            "stolen_epochs": {d: sorted(k) for d, k in broker.loot.items()},
+            "notes": notes,
+        }
+
+    @app.post("/mitm/decrypt")
+    def mitm_decrypt() -> dict:
+        found = broker.decrypt_with_loot()
+        if found is None:
+            raise HTTPException(404, "no captured message under a stolen key")
+        return found
+
     @app.delete("/rules")
     def clear_rules() -> dict:
+        broker.collect_loot()
         broker.rules.clear()
         return status()
 

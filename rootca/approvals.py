@@ -28,7 +28,17 @@ ACTION_TYPES = ("add-device", "remove-device")
 ADMINS = ("A", "B", "C")
 THRESHOLD = 2
 DEVICE_ID = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
-RESERVED_IDS = {"root", "translog", "directory", "broker", "hub", "cli", "dashboard", "evil-proxy"}
+RESERVED_IDS = {
+    "root",
+    "translog",
+    "directory",
+    "broker",
+    "hub",
+    "cli",
+    "dashboard",
+    "evil-proxy",
+    "kdc",
+}
 
 
 def canonical(obj: Any) -> bytes:

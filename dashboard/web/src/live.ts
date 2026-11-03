@@ -24,11 +24,16 @@ export type Alert = {
 export type TrustInfo = {
   fingerprint: string;
   pairing_code: string;
-  cert: { status: "trusted" | "pending" | "invalid" | "unverified"; detail: string; leaf_index?: number };
+  cert: {
+    status: "trusted" | "pending" | "invalid" | "revoked" | "unverified";
+    detail: string;
+    leaf_index?: number;
+  };
   peers: Record<string, { status: string; fingerprint?: string; reason?: string }>;
 };
 export type DeviceSnap = {
   id: string;
+  group?: { mode: string; epoch: number | null; session: boolean };
   identity?: TrustInfo;
   kind?: string;
   label?: string;
@@ -103,6 +108,8 @@ function reducer(state: LiveState, msg: Msg): LiveState {
         alerts: cap(msg.alerts),
         results: msg.results,
       };
+    case "epoch":
+      return { ...state, epoch: msg.epoch };
     case "log":
       return { ...state, logSize: msg.size };
     case "broker":

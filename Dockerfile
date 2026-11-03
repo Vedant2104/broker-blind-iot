@@ -27,6 +27,7 @@ COPY rootca rootca
 COPY dashboard dashboard
 COPY bench bench
 COPY evilbroker evilbroker
+COPY kdc kdc
 RUN pip install --no-cache-dir .
 
 COPY config config

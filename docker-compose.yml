@@ -11,6 +11,7 @@
 #   ./secrets/tls/identities/<name>/ each container gets only its own transport TLS identity
 #   ./secrets/devices/<id>/          each device's own identity keys (only that device)
 #   ./secrets/translog/              log signing key (only translog)
+#   ./secrets/kdc/                   KDC signing key (only the KDC)
 
 name: bbiot
 
@@ -21,6 +22,7 @@ x-env: &env
   BBIOT_PROXY_HOST: evil-broker
   BBIOT_DIRECTORY_HOST: directory
   BBIOT_TRANSLOG_HOST: translog
+  BBIOT_KDC_HOST: kdc
   BBIOT_DEVICE_HOST: service
   BBIOT_CONTROL_BIND: 0.0.0.0
 
@@ -151,6 +153,26 @@ services:
       - ./secrets/tls/identities/directory:/app/secrets/tls/identities/directory:ro
       - directory-data:/app/data
 
+  # Key Distribution Center (centralized group keys). Talks to devices over MQTT
+  # through the evil broker; knows every group key (the centralized trade-off).
+  kdc:
+    image: bbiot:dev
+    restart: unless-stopped
+    command: ["run", "kdc"]
+    depends_on:
+      evil-broker: {condition: service_started}
+      directory: {condition: service_started}
+    environment:
+      <<: *env
+      BBIOT_LISTEN: 0.0.0.0
+      BBIOT_DATA_DIR: /app/data
+    ports: ["127.0.0.1:8095:8095"]
+    volumes:
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/kdc:/app/secrets/kdc:ro
+      - ./secrets/tls/identities/kdc:/app/secrets/tls/identities/kdc:ro
+      - kdc-data:/app/data
+
   # --- devices (each sees only its own keys) ----------------------------------------------------
 
   front-door:
@@ -248,3 +270,4 @@ services:
 volumes:
   translog-data:
   directory-data:
+  kdc-data:

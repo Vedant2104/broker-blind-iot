@@ -35,6 +35,8 @@ dashboard_app = typer.Typer(help="The web dashboard.", no_args_is_help=True)
 pki_app = typer.Typer(help="Offline root ceremony and commissioning.", no_args_is_help=True)
 root_app = typer.Typer(help="The offline root CA.", no_args_is_help=True)
 service_app = typer.Typer(help="Run a backend service.", no_args_is_help=True)
+security_app = typer.Typer(help="End-to-end protection ON / OFF.", no_args_is_help=True)
+kdc_app = typer.Typer(help="Key Distribution Center (centralized mode).", no_args_is_help=True)
 
 for sub, name in [
     (tls_app, "tls"),
@@ -49,6 +51,8 @@ for sub, name in [
     (pki_app, "pki"),
     (root_app, "root"),
     (service_app, "run"),
+    (security_app, "security"),
+    (kdc_app, "kdc"),
 ]:
     app.add_typer(sub, name=name)
 
@@ -113,8 +117,9 @@ def tls_init(
     """Create the transport CA, broker cert and one client cert per device/service."""
     cfg = _cfg()
     if if_missing and tls_material_exists(cfg.tls_dir) and not force:
-        log.info(f"TLS material already present in {cfg.tls_dir}, keeping it")
-        return
+        log.info(
+            f"TLS material already present in {cfg.tls_dir}, keeping it; adding new identities"
+        )
     uid = os.environ.get("BBIOT_BROKER_KEY_UID")
     written = init_tls(
         cfg.tls_dir, cfg.identities, force=force, broker_key_uid=int(uid) if uid else None
@@ -254,9 +259,14 @@ def attack_drop(
 
 
 @attack_app.command("mitm-dh")
-def attack_mitm_dh() -> None:
-    """6. Broker MITMs an unsigned key exchange."""
-    _todo(4, "attack mitm-dh")
+def attack_mitm_dh(
+    unsigned: bool = typer.Option(False, "--unsigned", help="Use the insecure unsigned DH."),
+    victim: str = typer.Option("thermostat", help="Device whose key exchange is attacked."),
+) -> None:
+    """6. Broker MITMs the device <-> KDC key exchange (unsigned: key stolen; signed: caught)."""
+    cfg = _cfg()
+    _check_device(cfg, victim)
+    _report(_run_remote(lambda: actions.attack_mitm_dh(cfg, _emit, unsigned, victim)))  # type: ignore[arg-type]
 
 
 @attack_app.command("compromised-device")
@@ -360,6 +370,57 @@ def root_issue(action: str = typer.Option(..., help="Approved action id.")) -> N
     _run_pki(lambda: pki_actions.issue(cfg, action, _emit))
 
 
+@app.command()
+def revoke(device: str = typer.Option(..., help="Device to remove from the home.")) -> None:
+    """Revoke a device (2 of 3 admins) — the KDC removes it and rekeys."""
+    cfg = _cfg()
+    _check_device(cfg, device)
+    _run_pki(lambda: pki_actions.revoke(cfg, device, _emit))
+
+
+@security_app.command("on")
+def security_on() -> None:
+    """Broker-blind: AEAD bound to topic/sender/seq/time/epoch + signed commands."""
+    cfg = _cfg()
+    _run_remote(lambda: actions.set_security(cfg, "on", _emit))
+
+
+@security_app.command("off")
+def security_off() -> None:
+    """TLS only: the broker can read and change everything."""
+    cfg = _cfg()
+    _run_remote(lambda: actions.set_security(cfg, "off", _emit))
+
+
+@security_app.command("status")
+def security_status() -> None:
+    """Show the current security mode."""
+    cfg = _cfg()
+    _emit(f"[demo] security: {actions.security_mode(cfg)}")
+
+
+@kdc_app.command("status")
+def kdc_status() -> None:
+    """Current epoch, members and rekey history (never keys)."""
+    cfg = _cfg()
+    st = _run_remote(lambda: remote.kdc_status(cfg))
+    _emit(f"[kdc] epoch {st['epoch']}  members: {', '.join(st['members']) or '-'}")  # type: ignore[index]
+    if st["revoked"]:  # type: ignore[index]
+        _emit(f"[kdc] revoked: {', '.join(st['revoked'])}")  # type: ignore[index]
+    for h in st["history"][-5:]:  # type: ignore[index]
+        _emit(
+            f"[kdc]   epoch {h['epoch']}: {h['reason']} ({len(h['members'])} members, {h['ms']} ms)"
+        )
+
+
+@kdc_app.command("rekey")
+def kdc_rekey() -> None:
+    """Force a new epoch."""
+    cfg = _cfg()
+    st = _run_remote(lambda: remote.kdc_rekey(cfg))
+    _emit(f"[kdc] rekeyed → epoch {st['epoch']}")  # type: ignore[index]
+
+
 @log_app.command("verify")
 def log_verify() -> None:
     """Verify tree head, consistency with last run, inclusion of every directory cert."""
@@ -431,6 +492,14 @@ def proxy_clear() -> None:
 def run_directory() -> None:
     """Run the key directory (normally started by docker compose)."""
     from directory.run import serve
+
+    serve(_cfg())
+
+
+@service_app.command("kdc")
+def run_kdc() -> None:
+    """Run the KDC (normally started by docker compose)."""
+    from kdc.run import serve
 
     serve(_cfg())
 

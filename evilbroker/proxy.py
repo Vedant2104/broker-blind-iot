@@ -64,6 +64,7 @@ class EvilBroker:
         self.cfg = cfg
         self.rules = Rules()
         self.captures = CaptureStore()
+        self.loot: dict[str, dict[int, bytes]] = {}  # victim -> epoch -> stolen key (never served)
         self.stats = {"connections": 0, "forwarded": 0, "dropped": 0, "modified": 0, "injected": 0}
         self._lock = threading.Lock()
         self._injector = None
@@ -88,10 +89,48 @@ class EvilBroker:
             f"({len(cap.payload)} bytes, seq={cap.seq}, originally from {cap.client})"
         )
 
+    def collect_loot(self) -> None:
+        with self._lock:
+            for dev, m in self.rules.mitm.items():
+                self.loot.setdefault(dev, {}).update(m.learned)
+
+    def decrypt_with_loot(self) -> dict | None:
+        """Prove a stolen key works: decrypt the newest captured sealed message under
+        a stolen epoch. Returns metadata only (topic, sender, fields) — no values."""
+        import json as _json
+
+        from cryptography.exceptions import InvalidTag
+
+        from securelib.message import decrypt_unchecked, peek_header
+
+        self.collect_loot()
+        keys = {e: k for stolen in self.loot.values() for e, k in stolen.items()}
+        for cap in reversed(self.captures.find()):
+            h = peek_header(cap.payload) if cap.payload[:1] == b"\x01" else None
+            if h is None or h.epoch not in keys:
+                continue
+            try:
+                body = _json.loads(decrypt_unchecked(cap.topic, cap.payload, keys[h.epoch]))
+            except (InvalidTag, ValueError) as exc:  # wrong key / not ours: keep looking
+                log.info(f"stolen key did not open capture #{cap.id}: {type(exc).__name__}")
+                continue
+            log.info(
+                f"☠ decrypted capture #{cap.id} on {cap.topic} with stolen epoch-{h.epoch} key"
+            )
+            return {
+                "capture": cap.id,
+                "topic": cap.topic,
+                "sender": h.sender,
+                "epoch": h.epoch,
+                "fields": sorted(body) if isinstance(body, dict) else [],
+            }
+        return None
+
     def reset(self) -> None:
         with self._lock:
             self.rules.clear()
             self.captures.clear()
+            self.loot.clear()
         log.info("rules cleared, captures cleared")
 
     # --- proxying ------------------------------------------------------------

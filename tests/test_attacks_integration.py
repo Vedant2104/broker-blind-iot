@@ -1,13 +1,18 @@
-"""Phase 1 baseline: with security OFF, attacks 1-5 succeed against the running
-stack. Run with `make test-integration` (needs `docker compose up -d`)."""
+"""Attacks against the running stack, security OFF vs ON.
+
+OFF (TLS only): attacks 1-5 succeed, attack 6 (unsigned DH) steals the key.
+ON (broker-blind): attacks 1-4 and 6 are blocked; 5 (drop) still succeeds until
+phase 6 adds detection.
+Run with `make test-integration` (needs `docker compose up -d`)."""
 
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
-from cli import actions
+from cli import actions, pki_actions, remote
 from securelib.config import load_config
 
 pytestmark = [
@@ -15,45 +20,116 @@ pytestmark = [
     pytest.mark.skipif(os.environ.get("BBIOT_INTEGRATION") != "1", reason="stack not running"),
 ]
 
-FRONT, BACK = "home/door/front/cmd", "home/door/back/cmd"
+FRONT, BACK, SMOKE = "home/door/front/cmd", "home/door/back/cmd", "home/smoke/kitchen"
+
+
+def quiet(_line: str) -> None:
+    pass
 
 
 @pytest.fixture(scope="module")
 def cfg():
     c = load_config()
-    actions.demo_reset(c, lambda _line: None)
-    return c
+    actions.demo_reset(c, quiet)
+    yield c
+    actions.set_security(c, "on", quiet)
 
 
-def _quiet(_line: str) -> None:
-    pass
+def run_attack(cfg, name: str):
+    return {
+        "read": lambda: actions.attack_read(cfg, quiet),
+        "modify": lambda: actions.attack_modify(cfg, quiet, setpoint=30, requested=21),
+        "replay": lambda: actions.attack_replay(cfg, quiet),
+        "redirect": lambda: actions.attack_redirect(cfg, quiet, FRONT, BACK),
+        "drop": lambda: actions.attack_drop(cfg, quiet, SMOKE, wait=2),
+    }[name]()
 
 
-def test_attack_read_succeeds(cfg) -> None:
-    assert actions.attack_read(cfg, _quiet).outcome == "SUCCEEDED"
-
-
-def test_attack_modify_succeeds(cfg) -> None:
-    r = actions.attack_modify(cfg, _quiet, setpoint=30, requested=21)
+@pytest.mark.parametrize("name", ["read", "modify", "replay", "redirect", "drop"])
+def test_security_off_attacks_succeed(cfg, name: str) -> None:
+    actions.set_security(cfg, "off", quiet)
+    r = run_attack(cfg, name)
     assert r.outcome == "SUCCEEDED", r.reason
 
 
-def test_attack_replay_succeeds(cfg) -> None:
-    r = actions.attack_replay(cfg, _quiet)
+@pytest.mark.parametrize(
+    ("name", "expected", "reason"),
+    [
+        ("read", "BLOCKED", "ciphertext"),
+        ("modify", "BLOCKED", "tag invalid"),
+        ("replay", "BLOCKED", "replay"),
+        ("redirect", "BLOCKED", "wrong topic"),
+        ("drop", "SUCCEEDED", ""),  # detection arrives in phase 6
+    ],
+)
+def test_security_on_attacks(cfg, name: str, expected: str, reason: str) -> None:
+    actions.set_security(cfg, "on", quiet)
+    time.sleep(1)
+    r = run_attack(cfg, name)
+    assert r.outcome == expected, r.reason
+    assert reason in r.reason
+
+
+def test_unsigned_key_exchange_is_broken(cfg) -> None:
+    actions.set_security(cfg, "on", quiet)
+    r = actions.attack_mitm_dh(cfg, quiet, unsigned=True)
     assert r.outcome == "SUCCEEDED", r.reason
+    assert "stole" in r.reason
 
 
-def test_attack_redirect_succeeds(cfg) -> None:
-    r = actions.attack_redirect(cfg, _quiet, FRONT, BACK)
-    assert r.outcome == "SUCCEEDED", r.reason
-
-
-def test_attack_drop_succeeds(cfg) -> None:
-    r = actions.attack_drop(cfg, _quiet, "home/smoke/kitchen", wait=2)
-    assert r.outcome == "SUCCEEDED", r.reason
+def test_signed_key_exchange_detects_mitm(cfg) -> None:
+    r = actions.attack_mitm_dh(cfg, quiet, unsigned=False)
+    assert r.outcome == "BLOCKED", r.reason
+    assert "signature invalid" in r.reason
 
 
 def test_rules_are_disarmed_after_attacks(cfg) -> None:
-    from cli import remote
+    rules = remote.proxy_status(cfg)["rules"]
+    assert rules == {"drop": [], "redirect": {}, "modify": {}, "mitm_dh": []}
 
-    assert remote.proxy_status(cfg)["rules"] == {"drop": [], "redirect": {}, "modify": {}}
+
+def _epoch(cfg, device: str) -> int | None:
+    return remote.device_state(cfg, device)["group"]["epoch"]
+
+
+def _wait(pred, timeout: float = 15.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(0.5)
+    return None
+
+
+def test_revoked_device_cannot_read_new_traffic(cfg) -> None:
+    """Revoke garage-lock (2 of 3), KDC rekeys; garage-lock stays on the old epoch
+    and rejects new messages. Then re-pair it to restore the home."""
+    actions.set_security(cfg, "on", quiet)
+    assert _wait(lambda: _epoch(cfg, "garage-lock")), "garage-lock has no group key"
+    old = _epoch(cfg, "garage-lock")
+
+    aid = pki_actions.revoke(cfg, "garage-lock", quiet)
+    pki_actions.approve(cfg, "B", aid, quiet, auto_issue=False)
+    pki_actions.approve(cfg, "C", aid, quiet)
+    assert _wait(lambda: "garage-lock" not in remote.kdc_status(cfg)["members"])
+    assert _wait(lambda: (_epoch(cfg, "phone") or 0) > old)
+    assert _epoch(cfg, "garage-lock") == old
+
+    mark = remote.device_state(cfg, "garage-lock")["last_event"]
+    actions.send(cfg, "phone", "home/door/garage/cmd", "unlock", {}, quiet)
+    rejected = _wait(
+        lambda: [
+            e
+            for e in remote.device_events(cfg, "garage-lock", after=mark)
+            if e["kind"] == "rejected"
+        ]
+    )
+    assert rejected and rejected[-1]["reason"].startswith("wrong epoch")
+    assert remote.device_state(cfg, "garage-lock")["state"]["locked"] is True
+
+    # restore: re-commission with a new certificate; it rejoins under the new epoch
+    aid = pki_actions.pair(cfg, "garage-lock", quiet)
+    pki_actions.approve(cfg, "A", aid, quiet, auto_issue=False)
+    pki_actions.approve(cfg, "C", aid, quiet)
+    assert _wait(lambda: "garage-lock" in remote.kdc_status(cfg)["members"], timeout=30)

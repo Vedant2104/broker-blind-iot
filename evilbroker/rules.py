@@ -10,7 +10,9 @@ import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
 
+from evilbroker.mitm_dh import DhMitm
 from evilbroker.wire import Publish
+from securelib.message import peek_header
 
 
 @dataclass
@@ -18,21 +20,47 @@ class Rules:
     drop: set[str] = field(default_factory=set)
     redirect: dict[str, str] = field(default_factory=dict)  # from topic -> to topic
     modify: dict[str, float] = field(default_factory=dict)  # topic -> injected setpoint
+    mitm: dict[str, DhMitm] = field(default_factory=dict)  # device -> key-exchange MITM
 
     def clear(self) -> None:
         self.drop.clear()
         self.redirect.clear()
         self.modify.clear()
+        self.mitm.clear()
 
     def as_dict(self) -> dict:
         return {
             "drop": sorted(self.drop),
             "redirect": dict(self.redirect),
             "modify": dict(self.modify),
+            "mitm_dh": sorted(self.mitm),
         }
+
+    def apply_mitm(self, p: Publish) -> tuple[Publish, str | None]:
+        """Attack 6: rewrite key-exchange messages of an armed victim."""
+        parts = p.topic.split("/")
+        if len(parts) != 3 or parts[0] != "kdc" or parts[2] not in self.mitm:
+            return p, None
+        m = self.mitm[parts[2]]
+        try:
+            msg = json.loads(p.payload)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return p, None
+        kind = msg.get("t")
+        handler = {"hello": m.on_hello, "challenge": m.on_challenge, "key": m.on_key}.get(kind)
+        if handler is None:
+            return p, None
+        before = len(m.learned)
+        new = handler(msg)
+        note = f"MITM key exchange: rewrote {kind} for {parts[2]}"
+        if len(m.learned) > before:
+            note += f" — STOLE group key for epoch {max(m.learned)}"
+        return p.with_(payload=json.dumps(new, separators=(",", ":")).encode()), note
 
     def apply(self, p: Publish) -> tuple[Publish | None, str | None]:
         """Return (publish to forward or None if dropped, description of what was done)."""
+        if self.mitm and p.topic.startswith("kdc/"):
+            return self.apply_mitm(p)
         if p.topic in self.drop:
             return None, f"DROPPED {p.topic}"
         note = None
@@ -67,7 +95,11 @@ def tamper_payload(payload: bytes, setpoint: float) -> tuple[bytes, str]:
 
 
 def extract_seq(payload: bytes) -> int | None:
-    """Sequence number as visible to the broker (plaintext envelope field)."""
+    """Sequence number as visible to the broker: the plaintext envelope field, or
+    the clear header of a sealed message."""
+    header = peek_header(payload) if payload[:1] == b"\x01" else None
+    if header is not None:
+        return header.seq
     try:
         body = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError):

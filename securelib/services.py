@@ -62,6 +62,12 @@ class DirectoryClient(_Client):
     def publish(self, cert_pem: str, action_id: str | None = None) -> dict:
         return self._req("POST", "/certs", json={"cert_pem": cert_pem, "action_id": action_id})
 
+    def list_revocations(self) -> list[dict]:
+        return self._req("GET", "/revocations") or []
+
+    def publish_revocation(self, signed: dict) -> dict:
+        return self._req("POST", "/revocations", json={"signed": signed})
+
     def list_actions(self) -> list[dict]:
         return self._req("GET", "/actions") or []
 

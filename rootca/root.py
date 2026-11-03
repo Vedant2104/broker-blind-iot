@@ -31,11 +31,13 @@ from securelib.identity import read_private, write_private
 from securelib.pki import (
     DEVICE_EKU,
     LOG_EKU,
+    SERVICE_EKUS,
     X25519_EXT_OID,
     TrustError,
     load_root,
     raw_public,
     read_x25519_extension,
+    sign_revocation,
     x25519_extension,
 )
 
@@ -67,6 +69,15 @@ class PkiPaths:
     @property
     def translog_crt(self) -> Path:
         return self.public / "translog.crt"
+
+    @property
+    def kdc_crt(self) -> Path:
+        return self.public / "kdc.crt"
+
+    @property
+    def kdc_key(self) -> Path:
+        """KDC signing key (mounted only into the KDC): <secrets>/kdc/kdc.key."""
+        return self.translog_key.parent.parent / "kdc" / "kdc.key"
 
 
 def _name(cn: str) -> x509.Name:
@@ -151,10 +162,31 @@ def pki_exists(paths: PkiPaths) -> bool:
     )
 
 
+def _issue_service_cert(paths: PkiPaths, name: str, key_path: Path, crt_path: Path) -> None:
+    root_key = read_private(paths.root_key)
+    root_cert, _ = load_root(paths.root_crt.read_bytes())
+    key = Ed25519PrivateKey.generate()
+    write_private(key_path, key)
+    cert = (
+        _leaf_builder(name, root_cert, root_key, key.public_key(), ROOT_DAYS)
+        .add_extension(x509.ExtendedKeyUsage([SERVICE_EKUS[name]]), critical=False)
+        .sign(root_key, None)
+    )
+    crt_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
+def _ensure_services(paths: PkiPaths) -> list[str]:
+    notes = []
+    if not paths.kdc_crt.is_file() or not paths.kdc_key.is_file():
+        _issue_service_cert(paths, "kdc", paths.kdc_key, paths.kdc_crt)
+        notes.append("KDC signing key certified by root")
+    return notes
+
+
 def init_pki(paths: PkiPaths, *, force: bool = False) -> list[str]:
     """Create root, admin keys + signed roster, and the log key + its certificate."""
     if pki_exists(paths) and not force:
-        return []
+        return _ensure_services(paths)  # add service certs introduced by later phases
     notes = []
     root_key = Ed25519PrivateKey.generate()
     write_private(paths.root_key, root_key)
@@ -181,7 +213,27 @@ def init_pki(paths: PkiPaths, *, force: bool = False) -> list[str]:
     )
     paths.translog_crt.write_bytes(log_cert.public_bytes(serialization.Encoding.PEM))
     notes.append("transparency log key certified by root")
-    return notes
+    if force:
+        paths.kdc_crt.unlink(missing_ok=True)
+    return notes + _ensure_services(paths)
+
+
+def issue_revocation(
+    paths: PkiPaths, action: dict, approval_sigs: dict[str, str], serial_hex: str
+) -> tuple[dict, list[str]]:
+    """Root-signed revocation — only for a remove-device action approved by 2 of 3."""
+    roster = load_roster(paths)
+    approvers = approvals.require_threshold(action, approval_sigs, roster)
+    if action.get("type") != "remove-device":
+        raise TrustError("action is not remove-device")
+    approvals.check_device_id(action["device_id"])
+    statement = {
+        "device_id": action["device_id"],
+        "serial": serial_hex,
+        "action_id": approvals.action_id(action),
+        "revoked_ms": int(dt.datetime.now(dt.UTC).timestamp() * 1000),
+    }
+    return sign_revocation(read_private(paths.root_key), statement), approvers
 
 
 def load_roster(paths: PkiPaths) -> dict:

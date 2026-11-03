@@ -93,3 +93,35 @@ def device_reset(cfg: Config, device: str) -> dict:
 def device_identity(cfg: Config, device: str) -> dict:
     """The device's public identity: CSR, pairing code, fingerprint, cert status."""
     return _call("GET", f"{cfg.device_url(device)}/identity")
+
+
+def device_set_security(cfg: Config, device: str, mode: str) -> dict:
+    return _call("POST", f"{cfg.device_url(device)}/security", json={"mode": mode})
+
+
+def device_rejoin(cfg: Config, device: str, auth: str = "signed") -> dict:
+    return _call("POST", f"{cfg.device_url(device)}/rejoin", json={"auth": auth})
+
+
+def kdc_status(cfg: Config) -> dict:
+    return _call("GET", f"{cfg.kdc_url}/status")
+
+
+def kdc_rekey(cfg: Config) -> dict:
+    return _call("POST", f"{cfg.kdc_url}/rekey")
+
+
+def kdc_allow_unsigned(cfg: Config, device: str) -> dict:
+    return _call("POST", f"{cfg.kdc_url}/allow-unsigned", json={"device": device})
+
+
+def proxy_arm_mitm(cfg: Config, device: str) -> dict:
+    return _call("PUT", f"{cfg.proxy_url}/rules/mitm-dh", json={"device": device})
+
+
+def proxy_mitm_status(cfg: Config) -> dict:
+    return _call("GET", f"{cfg.proxy_url}/mitm")
+
+
+def proxy_mitm_decrypt(cfg: Config) -> dict:
+    return _call("POST", f"{cfg.proxy_url}/mitm/decrypt")

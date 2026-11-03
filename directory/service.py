@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from rootca import approvals
 from securelib.log import get_logger
-from securelib.pki import TrustError, load_root, verify_device_cert
+from securelib.pki import TrustError, load_root, verify_device_cert, verify_revocation
 
 log = get_logger("directory")
 
@@ -31,9 +31,9 @@ class DirectoryStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = threading.Lock()
-        self.data: dict[str, dict[str, Any]] = {"certs": {}, "actions": {}}
+        self.data: dict[str, dict[str, Any]] = {"certs": {}, "actions": {}, "revocations": {}}
         if path.exists():
-            self.data = json.loads(path.read_text("utf-8"))
+            self.data = {**self.data, **json.loads(path.read_text("utf-8"))}
         path.parent.mkdir(parents=True, exist_ok=True)
 
     def save(self) -> None:
@@ -56,6 +56,10 @@ class CertBody(BaseModel):
 class ActionBody(BaseModel):
     action: dict[str, Any]
     csr_pem: str | None = None
+
+
+class RevocationBody(BaseModel):
+    signed: dict[str, Any]
 
 
 class ApprovalBody(BaseModel):
@@ -111,6 +115,27 @@ def create_app(
             f"(log leaf #{logged['index']}, tree size {logged['sth']['tree_size']})"
         )
         return {**public_cert_view(entry), "sth": logged["sth"]}
+
+    @app.get("/revocations")
+    def list_revocations() -> list[dict]:
+        return list(store.data["revocations"].values())
+
+    @app.post("/revocations")
+    def revoke(body: RevocationBody) -> dict:
+        try:
+            device_id, serial = verify_revocation(body.signed, root_key)
+        except TrustError as exc:
+            raise HTTPException(422, f"rejected: {exc}") from exc
+
+        def apply(d: dict) -> None:
+            d["revocations"][device_id] = body.signed
+            action_id = body.signed["revocation"].get("action_id")
+            if action_id in d["actions"]:
+                d["actions"][action_id]["status"] = "issued"
+
+        store.update(apply)
+        log.info(f"REVOKED {device_id} (serial {serial:x}) — root-signed revocation published")
+        return body.signed
 
     # --- admin action bulletin board -----------------------------------------------------
 

@@ -205,3 +205,28 @@ def test_log_dedupes_and_persists(home: Home, tmp_path: Path) -> None:
     assert first["index"] == again["index"] == 0
     reopened = LogStore(tmp_path / "log" / "leaves.txt", read_private(home.pki.translog_key))
     assert len(reopened.hashes) == 1
+
+
+def test_revoked_peer_rejected_and_forged_revocation_ignored(home: Home) -> None:
+    from rootca.root import issue_revocation
+    from securelib.trust import Revoked
+
+    d = DirectoryClient(home.dir_http)
+    d.publish(home.issue(home.keys("thermostat")))
+    v = home.verifier()
+    v.verify("thermostat")
+
+    action = approvals.new_action("remove-device", "thermostat")
+    sigs = {a: approvals.sign_approval(load_admin_key(home.pki, a), action) for a in ("B", "C")}
+    serial = d.get_cert("thermostat")["cert_pem"]
+    serial_hex = format(home.anchors.verify_cert_pem(serial).serial, "x")
+    signed, _ = issue_revocation(home.pki, action, sigs, serial_hex)
+
+    # A revocation signed by someone else is refused by the directory and ignored by clients.
+    fake = {**signed, "signature": "00" * 64}
+    assert home.dir_http.post("/revocations", json={"signed": fake}).status_code == 422
+    assert home.anchors.revoked([fake]) == {}
+
+    d.publish_revocation(signed)
+    with pytest.raises(Revoked, match="REVOKED"):
+        v.verify("thermostat")

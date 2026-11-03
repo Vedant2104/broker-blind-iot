@@ -233,3 +233,46 @@ def test_sth_signature(pki: PkiPaths) -> None:
         verify_sth(TreeHead(6, sth.timestamp_ms, sth.root_hash, sth.signature), log_pub)
     with pytest.raises(TrustError):
         verify_sth(_sth(Ed25519PrivateKey.generate()), log_pub)
+
+
+# --- KDC certificate + revocations (phase 3/4) -------------------------------------------------
+
+
+def test_kdc_cert_issued_and_is_not_a_log_cert(pki: PkiPaths) -> None:
+    kdc_cert = x509.load_pem_x509_certificate(pki.kdc_crt.read_bytes())
+    verify_service_cert(kdc_cert, *root(pki), "kdc")
+    with pytest.raises(TrustError):
+        verify_service_cert(kdc_cert, *root(pki), "translog")
+
+
+def test_kdc_cert_added_to_existing_pki(pki: PkiPaths) -> None:
+    pki.kdc_crt.unlink()
+    assert init_pki(pki) == ["KDC signing key certified by root"]
+    assert pki.kdc_crt.is_file()
+
+
+def test_revocation_needs_two_admins_and_root_signature(pki: PkiPaths, device: DeviceKeys):
+    from rootca.root import issue_revocation
+    from securelib.pki import verify_revocation
+
+    cert = issue(pki, device)
+    serial = format(cert.serial_number, "x")
+    action = approvals.new_action("remove-device", "garage-lock")
+    with pytest.raises(TrustError, match="has 1"):
+        issue_revocation(pki, action, approve(pki, action, "C"), serial)
+    signed, approvers = issue_revocation(pki, action, approve(pki, action, "A", "C"), serial)
+    assert approvers == ["A", "C"]
+    _, root_pub = root(pki)
+    assert verify_revocation(signed, root_pub) == ("garage-lock", cert.serial_number)
+
+    forged = {**signed, "revocation": {**signed["revocation"], "device_id": "front-door"}}
+    with pytest.raises(TrustError, match="not signed by the root"):
+        verify_revocation(forged, root_pub)
+
+
+def test_add_action_cannot_revoke(pki: PkiPaths, device: DeviceKeys) -> None:
+    from rootca.root import issue_revocation
+
+    action = approvals.new_action("add-device", "garage-lock", device.csr_pem)
+    with pytest.raises(TrustError, match="not remove-device"):
+        issue_revocation(pki, action, approve(pki, action, "A", "B"), "01")

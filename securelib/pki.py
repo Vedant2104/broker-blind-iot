@@ -32,6 +32,8 @@ X25519_EXT_OID = x509.ObjectIdentifier(
 _ARC = "2.25." + str(uuid.UUID("0b7e4f7a-2a51-4f0e-9a43-1d2b8f7c6e15").int)
 DEVICE_EKU = x509.ObjectIdentifier(_ARC + ".1")
 LOG_EKU = x509.ObjectIdentifier(_ARC + ".2")
+KDC_EKU = x509.ObjectIdentifier(_ARC + ".3")
+SERVICE_EKUS = {"translog": LOG_EKU, "kdc": KDC_EKU}
 RAW = serialization.Encoding.Raw, serialization.PublicFormat.Raw
 
 
@@ -195,7 +197,9 @@ def verify_service_cert(
         raise TrustError("certificate is expired or not yet valid")
     if common_name(cert.subject) != name:
         raise TrustError(f"certificate is not for '{name}'")
-    check_eku(cert, LOG_EKU)
+    if name not in SERVICE_EKUS:
+        raise TrustError(f"'{name}' is not a known service")
+    check_eku(cert, SERVICE_EKUS[name])
     key = cert.public_key()
     if not isinstance(key, Ed25519PublicKey):
         raise TrustError("service key is not Ed25519")
@@ -250,3 +254,31 @@ def verify_sth(sth: TreeHead, log_key: Ed25519PublicKey) -> None:
         log_key.verify(sth.signature, sth.signed_bytes())
     except InvalidSignature as exc:
         raise TrustError("tree head signature invalid (not signed by the log)") from exc
+
+
+# --- revocations ---------------------------------------------------------------------------------
+
+REVOCATION_CONTEXT = b"bbiot-revocation-v1"
+
+
+def _canonical(obj: object) -> bytes:
+    import json
+
+    return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
+
+
+def sign_revocation(root_key, statement: dict) -> dict:
+    return {
+        "revocation": statement,
+        "signature": root_key.sign(REVOCATION_CONTEXT + _canonical(statement)).hex(),
+    }
+
+
+def verify_revocation(signed: dict, root_key: Ed25519PublicKey) -> tuple[str, int]:
+    """Returns (device_id, revoked certificate serial)."""
+    try:
+        st = signed["revocation"]
+        root_key.verify(bytes.fromhex(signed["signature"]), REVOCATION_CONTEXT + _canonical(st))
+        return str(st["device_id"]), int(st["serial"], 16)
+    except (KeyError, ValueError, TypeError, InvalidSignature) as exc:
+        raise TrustError("revocation is not signed by the root") from exc

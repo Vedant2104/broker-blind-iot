@@ -25,6 +25,7 @@ from securelib.pki import (
     TrustError,
     load_root,
     verify_device_cert,
+    verify_revocation,
     verify_service_cert,
     verify_sth,
 )
@@ -33,6 +34,10 @@ from translog import merkle
 
 
 class KeyChanged(TrustError):
+    pass
+
+
+class Revoked(TrustError):
     pass
 
 
@@ -46,10 +51,27 @@ class TrustAnchors:
         self.root, self.root_key = load_root(root_path.read_bytes())
         log_cert = x509.load_pem_x509_certificate((public_dir / "translog.crt").read_bytes())
         self.log_key = verify_service_cert(log_cert, self.root, self.root_key, "translog")
+        kdc_path = public_dir / "kdc.crt"
+        self.kdc_key = None
+        if kdc_path.is_file():
+            kdc_cert = x509.load_pem_x509_certificate(kdc_path.read_bytes())
+            self.kdc_key = verify_service_cert(kdc_cert, self.root, self.root_key, "kdc")
 
     @classmethod
     def from_config(cls, cfg: Config) -> TrustAnchors:
         return cls(cfg.pki_public_dir)
+
+    def revoked(self, signed_list: list[dict]) -> dict[str, set[int]]:
+        """Verified revocations: device id -> revoked certificate serials.
+        Entries not signed by the root are ignored."""
+        out: dict[str, set[int]] = {}
+        for signed in signed_list:
+            try:
+                dev, serial = verify_revocation(signed, self.root_key)
+            except TrustError:
+                continue
+            out.setdefault(dev, set()).add(serial)
+        return out
 
     def verify_cert_pem(self, pem: str | bytes, expected_id: str | None = None) -> DeviceIdentity:
         if isinstance(pem, str):
@@ -188,11 +210,22 @@ class PeerVerifier:
             anchors, DirectoryClient.connect(cfg, identity), log, PinStore(state_dir / "pins.json")
         )
 
-    def verify(self, device_id: str, entry: dict | None = None) -> VerifiedPeer:
+    def revocations(self) -> dict[str, set[int]]:
+        return self.anchors.revoked(self.directory.list_revocations())
+
+    def verify(
+        self, device_id: str, entry: dict | None = None, revoked: dict[str, set[int]] | None = None
+    ) -> VerifiedPeer:
         entry = entry or self.directory.get_cert(device_id)
         if entry is None:
             raise TrustError(f"directory has no certificate for {device_id}")
         ident = self.anchors.verify_cert_pem(entry["cert_pem"], expected_id=device_id)
+        if revoked is None:
+            revoked = self.revocations()
+        if ident.serial in revoked.get(device_id, set()):
+            raise Revoked(
+                f"{device_id} is REVOKED (root-signed revocation, serial {ident.serial:x})"
+            )
         sth, _ = self.log.fresh_sth()
         index = self.log.check_inclusion(ident.der, sth)
         pin = self.pins.check(device_id, ident.fingerprint)

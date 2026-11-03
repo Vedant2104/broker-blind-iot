@@ -7,6 +7,7 @@ click and the equivalent `bbiot` command produce identical output.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shlex
 import threading
@@ -297,3 +298,86 @@ def demo_reset(cfg: Config, emit: Emit) -> None:
     for device in cfg.devices:
         remote.device_reset(cfg, device)
         emit(f"[demo] {device}: reset")
+
+
+# --- security mode ------------------------------------------------------------------------
+
+
+def set_security(cfg: Config, mode: str, emit: Emit) -> str:
+    """Turn end-to-end protection ON (broker-blind) or OFF (TLS only) on every device."""
+    if mode not in ("on", "off"):
+        raise remote.RemoteError("mode must be on or off")
+    for device in cfg.devices:
+        try:
+            remote.device_set_security(cfg, device, mode)
+            emit(f"[{cfg.devices[device].log_name}] security {mode.upper()}")
+        except remote.Unreachable:
+            emit(f"[{cfg.devices[device].log_name}] unreachable — skipped")
+    label = "broker-blind (AEAD + signatures)" if mode == "on" else "TLS only (broker reads all)"
+    emit(f"[demo] security {mode.upper()}: {label}")
+    return mode
+
+
+def security_mode(cfg: Config) -> str:
+    modes = set()
+    for device in cfg.devices:
+        with contextlib.suppress(remote.RemoteError):
+            modes.add(remote.device_state(cfg, device)["security"])
+    return modes.pop() if len(modes) == 1 else "mixed" if modes else "unknown"
+
+
+# --- attack 6 ---------------------------------------------------------------------------------
+
+
+def attack_mitm_dh(
+    cfg: Config, emit: Emit, unsigned: bool = False, victim: str = "thermostat"
+) -> AttackResult:
+    """6. Broker MITMs the device <-> KDC key exchange."""
+    auth = "unsigned" if unsigned else "signed"
+    command = _cmdline("attack", "mitm-dh", *(["--unsigned"] if unsigned else []))
+    remote.proxy_arm_mitm(cfg, victim)
+    _say(emit, f"armed: man-in-the-middle on {victim}'s key exchange with the KDC")
+    if unsigned:
+        remote.kdc_allow_unsigned(cfg, victim)
+        _say(emit, "KDC told to accept one UNSIGNED exchange (the insecure design)")
+    mark = _mark(cfg, victim)
+    stolen, proof, alert = None, None, None
+    try:
+        remote.device_rejoin(cfg, victim, auth)
+        _say(emit, f"{victim} re-joins the group ({auth} X25519 key exchange via the broker)")
+        if unsigned:
+            stolen = _wait_for(
+                lambda: remote.proxy_mitm_status(cfg)["stolen_epochs"].get(victim), timeout=8
+            )
+            if stolen:
+                _say(
+                    emit, f"swapped both DH shares; unwrapped the group key for epoch {stolen[-1]}"
+                )
+                # Make some traffic under that key, then decrypt it.
+                send(cfg, "phone", _cmd_topic(cfg, "thermostat"), "set", {"setpoint": 21}, emit)
+                time.sleep(1.5)
+                try:
+                    proof = remote.proxy_mitm_decrypt(cfg)
+                except remote.RemoteError:
+                    proof = None
+        alert = _wait_for(lambda: _events_since(cfg, victim, mark, "alert"), timeout=5)
+    finally:
+        remote.proxy_clear(cfg)
+
+    if unsigned and stolen:
+        what = (
+            f"; decrypted {proof['topic']} from {proof['sender']} (fields: "
+            f"{', '.join(proof['fields'])})"
+            if proof
+            else ""
+        )
+        reason = f"broker stole the epoch-{stolen[-1]} group key via unsigned DH{what}"
+        _say(emit, "evicting the attacker: KDC rekeys, victim re-joins with a signed exchange")
+        remote.kdc_rekey(cfg)
+        remote.device_rejoin(cfg, victim, "signed")
+        return AttackResult("mitm-dh", SUCCEEDED, reason, command, {"epoch": stolen[-1]})
+    if alert:
+        _say(emit, f"{victim} retries with a clean signed exchange")
+        remote.device_rejoin(cfg, victim, "signed")
+        return AttackResult("mitm-dh", BLOCKED, alert[-1]["reason"], command)
+    return AttackResult("mitm-dh", BLOCKED, "key exchange could not be tampered with", command)

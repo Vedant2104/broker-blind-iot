@@ -15,7 +15,7 @@ def _deliver(device, topic: str, body: dict, sender: str = "phone") -> None:
 
 
 def test_lock_unlock_and_lock(cfg: Config) -> None:
-    door = build(cfg, "front-door")
+    door = build(cfg, "front-door", mode="off")
     assert door.state()["locked"] is True
     _deliver(door, "home/door/front/cmd", {"cmd": "unlock"})
     assert door.state() == {"locked": False, "by": "phone"}
@@ -24,13 +24,13 @@ def test_lock_unlock_and_lock(cfg: Config) -> None:
 
 
 def test_lock_ignores_unknown_command(cfg: Config) -> None:
-    door = build(cfg, "front-door")
+    door = build(cfg, "front-door", mode="off")
     _deliver(door, "home/door/front/cmd", {"cmd": "explode"})
     assert door.state()["locked"] is True
 
 
 def test_malformed_payload_is_rejected_and_logged(cfg: Config) -> None:
-    door = build(cfg, "front-door")
+    door = build(cfg, "front-door", mode="off")
     door._on_message(None, None, type("M", (), {"topic": "t", "payload": b"\x00garbage"})())
     ev = door.events.after(0)[-1]
     assert ev["kind"] == "rejected" and "malformed" in ev["reason"]
@@ -38,7 +38,7 @@ def test_malformed_payload_is_rejected_and_logged(cfg: Config) -> None:
 
 
 def test_thermostat_set(cfg: Config) -> None:
-    t = build(cfg, "thermostat")
+    t = build(cfg, "thermostat", mode="off")
     _deliver(t, "home/thermostat/living/cmd", {"cmd": "set", "setpoint": 23.5})
     assert t.state()["setpoint"] == 23.5
     _deliver(t, "home/thermostat/living/cmd", {"cmd": "set", "setpoint": "hot"})
@@ -46,7 +46,7 @@ def test_thermostat_set(cfg: Config) -> None:
 
 
 def test_smoke_test_raises_alarm_on_alarm_topic(cfg: Config) -> None:
-    s = build(cfg, "smoke-kitchen")
+    s = build(cfg, "smoke-kitchen", mode="off")
     _deliver(s, "home/smoke/kitchen/cmd", {"cmd": "test"})
     assert s.state()["alarm"] is True
     sent = [e for e in s.events.after(0) if e["kind"] == "sent"]
@@ -54,7 +54,7 @@ def test_smoke_test_raises_alarm_on_alarm_topic(cfg: Config) -> None:
 
 
 def test_phone_counts_alarms_not_state_updates(cfg: Config) -> None:
-    phone = build(cfg, "phone")
+    phone = build(cfg, "phone", mode="off")
     _deliver(phone, "home/smoke/kitchen/state", {"alarm": False}, sender="smoke-kitchen")
     assert phone.state()["alarms_received"] == 0
     _deliver(phone, "home/smoke/kitchen", {"alarm": "smoke"}, sender="smoke-kitchen")

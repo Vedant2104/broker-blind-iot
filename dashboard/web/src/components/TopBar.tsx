@@ -21,28 +21,36 @@ function Segmented({
   options,
   value,
   disabledReason,
+  onPick,
+  busy,
 }: {
   options: string[];
   value: string;
   disabledReason?: string;
+  onPick?: (option: string) => void;
+  busy?: boolean;
 }) {
   return (
-    <div
-      className="flex rounded-lg border border-line bg-panel-2 p-0.5"
-      title={disabledReason}
-    >
-      {options.map((o) => (
-        <span
-          key={o}
-          className={cn(
-            "rounded-md px-3 py-1 text-[14px] font-semibold",
-            o.toLowerCase() === value ? "bg-panel text-fg shadow" : "text-muted",
-            disabledReason && "opacity-60",
-          )}
-        >
-          {o}
-        </span>
-      ))}
+    <div className="flex rounded-lg border border-line bg-panel-2 p-0.5" title={disabledReason}>
+      {options.map((o) => {
+        const active = o.toLowerCase() === value;
+        return (
+          <button
+            key={o}
+            disabled={!onPick || busy || active}
+            onClick={() => onPick?.(o.toLowerCase())}
+            className={cn(
+              "rounded-md px-3 py-1 text-[14px] font-semibold",
+              active ? "bg-panel text-fg shadow" : "text-muted hover:text-fg",
+              !onPick && "opacity-60",
+              active && o === "ON" && "text-ok",
+              active && o === "OFF" && "text-bad",
+            )}
+          >
+            {o}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -51,11 +59,13 @@ export function TopBar({
   live,
   onReset,
   onVerifyLog,
+  onSecurity,
   busy,
 }: {
   live: LiveState;
   onReset: () => void;
   onVerifyLog: () => void;
+  onSecurity: (mode: string) => void;
   busy: string | null;
 }) {
   const secure = live.security === "on";
@@ -72,7 +82,8 @@ export function TopBar({
         <Segmented
           options={["OFF", "ON"]}
           value={live.security}
-          disabledReason="Security ON (broker-blind) arrives in phase 3"
+          onPick={onSecurity}
+          busy={!!busy}
         />
         <span className="text-[14px] text-muted">{secure ? "broker-blind" : "TLS only"}</span>
       </div>
@@ -80,7 +91,7 @@ export function TopBar({
       <Segmented
         options={["Centralized", "Decentralized"]}
         value={live.keymode}
-        disabledReason="Group key modes arrive in phases 4–5"
+        disabledReason="Decentralized (MLS) mode arrives in phase 5"
       />
 
       <div className="flex flex-wrap items-center gap-2">
@@ -91,7 +102,10 @@ export function TopBar({
           name={`transparency log${live.logSize != null ? ` · ${live.logSize}` : ""}`}
           status={live.services["translog"]}
         />
-        <Badge tone="muted">epoch {live.epoch ?? "—"}</Badge>
+        <Pill name="KDC" status={live.services["kdc"]} />
+        <Badge tone="accent" title="current group key epoch">
+          epoch {live.epoch ?? "—"}
+        </Badge>
         {!live.connected && <Badge tone="bad">dashboard offline</Badge>}
       </div>
 

@@ -36,4 +36,4 @@ def test_malformed_rejected(payload: bytes) -> None:
 
 def test_unknown_mode_refused() -> None:
     with pytest.raises(ValueError):
-        Channel("x", mode="on")  # until phase 3
+        Channel("x", mode="bogus")

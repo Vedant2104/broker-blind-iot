@@ -13,21 +13,23 @@ command, and the overhead is measured.
 | 0 | Scaffold: layout, compose, Mosquitto mTLS, `bbiot` CLI skeleton, tests | ✅ done |
 | 1 | Baseline devices, evil-broker proxy, attacks 1–5 succeed, Live Home | ✅ done |
 | 2 | Offline root, device certs, 2-of-3 admins, directory, transparency log | ✅ done |
-| 3 | securelib AEAD + topic/seq/time/epoch binding, replay window | next |
-| 4 | Centralized group keys (KDC) | |
-| 5 | Decentralized group keys (MLS via OpenMLS sidecar) | |
+| 3 | securelib AEAD + topic/seq/time/epoch binding, replay window | ✅ done (with 4) |
+| 4 | Centralized group keys (KDC), rekey on revoke, attack 6 | ✅ done (with 3) |
+| 5 | Decentralized group keys (MLS via OpenMLS sidecar) | next |
 | 6 | Hub, heartbeats, acks, MUD policy, quarantine | |
 | 7 | Full dashboard | |
 | 8 | Benchmarks | |
 | 9 | Polish | |
 
-## Architecture (phase 2)
+## Architecture
 
 ```
  devices ──mTLS──> evil-broker :8883 ──mTLS──> Mosquitto (stock)           host :8884
     │              control API :8090 (arms attacks)
-    └──HTTPS──> key directory :8443 ──HTTPS──> transparency log :8444
-                (public certs only)            (RFC 6962 Merkle tree)
+    ├──HTTPS──> key directory :8443 ──HTTPS──> transparency log :8444
+    │           (public certs only)            (RFC 6962 Merkle tree)
+    └──MQTT (via the broker)──> KDC  (signed X25519 key exchange, group keys, rekeys)
+                                control API :8095
 
  offline/  root key + admin keys A/B/C — used only by the one-shot ceremony
            containers (pki-init, commission) and the admin's host CLI
@@ -39,8 +41,40 @@ command, and the overhead is measured.
   transparent pass-through. Armed it modifies, redirects, drops and replays.
 - **Devices** each run in their own container with a localhost-only **simulator
   control API**. `bbiot send` and the dashboard ask the *device* to send.
-- **Message layer** (`securelib/channel.py`): still `mode=off` (plaintext) until
-  phase 3, so attacks 1–5 still succeed.
+- **Security toggle** (`bbiot security on|off`, dashboard top bar): OFF = TLS only,
+  the broker reads and changes everything; ON = broker-blind.
+
+### Message protection (security ON)
+
+Every message is sealed (`securelib/message.py`):
+
+```
+header (clear, authenticated): version | suite | epoch | seq | ts_ms | topic_tag | flags | sender | nonce
+ciphertext: AEAD(message_key(epoch), nonce, [Ed25519 signature ||] body, AAD)
+AAD = "bbiot-msg-v1" || topic || header
+```
+
+- AES-256-GCM (default) or ChaCha20-Poly1305 (`BBIOT_AEAD`), fresh random 96-bit nonce per
+  message, per-epoch message key derived from the group key with HKDF.
+- **Commands and alarms carry the sender's Ed25519 signature** inside the ciphertext, so
+  even a group member can't impersonate another (e.g. a hacked thermostat sending
+  "unlock" as the phone). State updates are AEAD-only.
+- Receivers reject, with the reason shown in logs and on the dashboard:
+  `wrong topic` · `wrong epoch` · `stale timestamp` (±30 s) · `replay` (64-message
+  sliding window per sender, updated only after authentication) · `tag invalid` ·
+  `bad signature` · `unknown sender` · `unsigned command` · `plaintext refused`.
+- Sequence numbers survive restarts (blocks reserved on disk).
+
+### Group keys: centralized mode (KDC)
+
+- Devices and the KDC run a **signed ephemeral X25519 key exchange** over MQTT, i.e.
+  through the untrusted broker (ISO 9798-3 style: each side signs a transcript with both
+  identities and both shares). The resulting pairwise key wraps every group key.
+- The KDC checks each joining device's certificate (root, log, pin, revocation).
+- **Rekeys** (new epoch, fresh key) when a new device joins (it can't read old traffic),
+  when a device is revoked (it can't read new traffic), or on request.
+- Only the current epoch is accepted; a device that sees a newer epoch asks the KDC again.
+- The KDC knows every group key — the centralized trade-off (attack 10, phase 5).
 
 ### Identity and PKI
 
@@ -52,7 +86,8 @@ command, and the overhead is measured.
 | Admins A/B/C | Ed25519 keys; their roster is signed by the root. Approvals are signatures over a domain-separated action digest. |
 | Key directory | `device_id → certificate`. Untrusted, holds no secrets. Also a bulletin board for pending admin actions. Logs every cert it publishes. |
 | Transparency log | Append-only RFC 6962 tree; signed tree heads (log key certified by the root); inclusion and consistency proofs. |
-| Peer check (every device) | root signature ✓ → STH signature ✓ → consistent with last STH seen ✓ → inclusion proof ✓ → key pin from first sight ✓. Any failure raises an alert. |
+| Peer check (every device) | root signature ✓ → not revoked ✓ → STH signature ✓ → consistent with last STH seen ✓ → inclusion proof ✓ → key pin from first sight ✓. Any failure raises an alert. |
+| Revocation | `remove-device` action, 2 of 3 admins → root-signed revocation (by certificate serial) → directory → devices refuse the peer, the KDC drops it and rekeys. A re-paired device (new certificate) can rejoin. |
 
 ## Layout
 
@@ -65,6 +100,7 @@ hub/         MUD policy, heartbeats/acks, alerts, quarantine          (phase 6)
 directory/   key directory (public certs only) + admin action board
 translog/    RFC 6962 Merkle tree (merkle.py) + log service
 rootca/      offline root CA (root.py) + 2-of-3 admin approvals (approvals.py)
+kdc/         Key Distribution Center (centralized group keys)
 dashboard/   FastAPI backend (app.py) + React frontend (web/)
 bench/       benchmarks, CSVs, charts                                  (phase 8)
 broker/      Mosquitto config (stock, mTLS only)
@@ -103,7 +139,16 @@ uv run bbiot keys                                       # what the directory ser
 uv run bbiot root issue --action <id>                   # refused with fewer than 2 approvals
 ```
 
-### Demo: the five broker attacks (security OFF)
+### Demo: revoking a device
+
+```sh
+uv run bbiot revoke --device garage-lock                # remove-device action
+uv run bbiot admin approve --admin A --action <id>
+uv run bbiot admin approve --admin B --action <id>      # root signs revocation → KDC rekeys
+uv run bbiot kdc status                                 # epoch, members, rekey history
+```
+
+### Demo: the broker attacks, security OFF vs ON
 
 ```sh
 uv run bbiot spy                                          # what the broker sees (Ctrl+C)
@@ -114,8 +159,21 @@ uv run bbiot attack replay                                # 3. captured unlock r
 uv run bbiot attack replay --seq 3                        #    ...or a specific captured seq
 uv run bbiot attack redirect --from home/door/front/cmd --to home/door/back/cmd   # 4.
 uv run bbiot attack drop --topic home/smoke/kitchen       # 5. smoke alarm silently dropped
+uv run bbiot attack mitm-dh --unsigned                    # 6. key exchange MITM (insecure DH)
+uv run bbiot attack mitm-dh                               # 6. ...signed DH: caught
 uv run bbiot demo reset                                   # clear rules, reset devices
 ```
+
+Run them with `bbiot security off`, then again with `bbiot security on`:
+
+| Attack | Security OFF | Security ON |
+|---|---|---|
+| 1 read | ☠ broker reads JSON | 🛡 ciphertext only |
+| 2 modify | ☠ thermostat set to 30°C | 🛡 `tag invalid` |
+| 3 replay | ☠ door unlocks again | 🛡 `replay (seq N already seen)` |
+| 4 redirect | ☠ back door unlocks | 🛡 `wrong topic` |
+| 5 drop | ☠ alarm lost silently | ☠ still lost (detection: phase 6) |
+| 6 MITM DH | ☠ `--unsigned`: group key stolen | 🛡 signed: `KDC signature invalid` |
 
 Each prints the attacker's steps and a result line, e.g.
 
@@ -152,6 +210,7 @@ rewritten to a Windows path.
 | 8884 | Mosquitto itself |
 | 8090 | evil-broker control API |
 | 8443 | key directory (HTTPS) |
+| 8095 | KDC control API (status, rekey) |
 | 8444 | transparency log (HTTPS) |
 | 8101–8106 | device simulator APIs (front-door, back-door, thermostat, smoke-kitchen, phone, garage-lock) |
 | 8000 | dashboard |
@@ -160,7 +219,7 @@ rewritten to a Windows path.
 
 ```sh
 make test              # unit tests (or: uv run pytest -m "not integration")
-make test-integration  # needs the stack up: attacks 1-5, broker, PKI and log checks
+make test-integration  # needs the stack up: OFF/ON attack matrix, attack 6, revocation, PKI
 make lint
 ```
 
@@ -187,6 +246,9 @@ cd dashboard/web && npm install && npm run dev    # http://127.0.0.1:5173, proxi
 | `BBIOT_DIRECTORY_HOST` / `_PORT` | from home.yaml | key directory |
 | `BBIOT_TRANSLOG_HOST` / `_PORT` | from home.yaml | transparency log |
 | `BBIOT_OFFLINE_DIR` | `offline` | root + admin keys (admin machine only) |
+| `BBIOT_KDC_HOST` / `_PORT` | from home.yaml | KDC control API |
+| `BBIOT_SECURITY` | `on` | device default security mode (toggle persists per device) |
+| `BBIOT_AEAD` | `AES-GCM` | or `ChaCha20-Poly1305` |
 
 ## Dashboard security
 
@@ -198,8 +260,9 @@ shell execution, no free-text commands. Everything binds to localhost.
 
 The mTLS set up here protects the network link only — the broker (and the
 evil proxy in front of it) still sees plaintext. That is the "security OFF"
-baseline. End-to-end protection (securelib, phases 3–6) is what keeps the
-broker blind; phase 2 provides the verified identities it is built on.
+baseline. With security ON, end-to-end protection (securelib) keeps the broker
+blind: it still sees topics, sizes, senders and sequence numbers (metadata), but
+cannot read, change, replay or redirect messages.
 
 ### Starting over
 

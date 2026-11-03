@@ -54,8 +54,10 @@ class Live:
             "evil-broker": "unknown",
             "directory": "unknown",
             "translog": "unknown",
+            "kdc": "unknown",
         }
         self.log_size: int | None = None
+        self.epoch: int | None = None
         self._queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ids = itertools.count(1)
@@ -88,12 +90,18 @@ class Live:
         self.alerts.append(item)
         self.push({"type": "alert", "alert": item})
 
+    def security(self) -> str:
+        """System security mode as reported by the devices themselves."""
+        modes = {d.get("security") for d in self.devices.values() if d.get("reachable")}
+        modes.discard(None)
+        return modes.pop() if len(modes) == 1 else ("mixed" if modes else "unknown")
+
     def snapshot(self) -> dict:
         return {
             "type": "snapshot",
-            "security": "off",
+            "security": self.security(),
             "keymode": "centralized",
-            "epoch": None,
+            "epoch": self.epoch,
             "log_size": self.log_size,
             "services": self.services,
             "devices": self.devices,
@@ -215,6 +223,14 @@ def _poll_trust_services(cfg: Config, live: Live) -> None:
                     live.push({"type": "log", "size": size})
         except ServiceError:
             live.services[name] = "down"
+    try:
+        st = remote.kdc_status(cfg)
+        live.services["kdc"] = "up"
+        if st["epoch"] != live.epoch:
+            live.epoch = st["epoch"]
+            live.push({"type": "epoch", "epoch": st["epoch"]})
+    except remote.RemoteError:
+        live.services["kdc"] = "down"
 
 
 # --- action allowlist ----------------------------------------------------------------------
@@ -230,6 +246,10 @@ class SetpointParams(BaseModel):
 
 class ModifyParams(BaseModel):
     setpoint: float = Field(30.0, ge=5, le=35)
+
+
+class MitmParams(BaseModel):
+    unsigned: bool | None = None  # default: unsigned when security is OFF, signed when ON
 
 
 class ReplayParams(BaseModel):
@@ -297,6 +317,21 @@ ACTIONS: dict[str, ActionSpec] = {
         lambda p: "bbiot log verify",
         lambda cfg, p, emit: pki_actions.log_verify(cfg, emit, identity=IDENTITY),
     ),
+    "attack.mitm_dh": ActionSpec(
+        MitmParams,
+        lambda p: "bbiot attack mitm-dh" + (" --unsigned" if p.unsigned else ""),
+        lambda cfg, p, emit: actions.attack_mitm_dh(cfg, emit, bool(p.unsigned)),
+    ),
+    "security.on": ActionSpec(
+        NoParams,
+        lambda p: "bbiot security on",
+        lambda cfg, p, emit: actions.set_security(cfg, "on", emit),
+    ),
+    "security.off": ActionSpec(
+        NoParams,
+        lambda p: "bbiot security off",
+        lambda cfg, p, emit: actions.set_security(cfg, "off", emit),
+    ),
     "demo.reset": ActionSpec(
         NoParams, lambda p: "bbiot demo reset", lambda cfg, p, emit: actions.demo_reset(cfg, emit)
     ),
@@ -340,6 +375,9 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
             raise HTTPException(422, exc.errors(include_url=False)) from exc
 
         run_id = uuid.uuid4().hex[:8]
+        mode_at_launch = live.security()
+        if isinstance(params, MitmParams) and params.unsigned is None:
+            params.unsigned = mode_at_launch == "off"
         command = spec.command(params)
 
         def emit(line: str) -> None:
@@ -367,7 +405,7 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
                 live.alert("critical", f"'{command}' found problems", command=command)
         if isinstance(result, actions.AttackResult):
             payload["result"] = result.as_dict()
-            live.results.append({**result.as_dict(), "security": "off", "ts": time.time()})
+            live.results.append({**result.as_dict(), "security": mode_at_launch, "ts": time.time()})
             emit(f"[attacker] RESULT: {result.outcome} — {result.reason}")
             severity = "critical" if result.outcome == "SUCCEEDED" else "info"
             live.alert(

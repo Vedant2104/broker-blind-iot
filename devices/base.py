@@ -8,6 +8,7 @@ It binds to localhost unless BBIOT_CONTROL_BIND says otherwise (docker).
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import os
@@ -20,10 +21,12 @@ from urllib.parse import parse_qs, urlparse
 
 import paho.mqtt.client as mqtt
 
-from securelib.channel import Channel
+from securelib.channel import Channel, NoGroupKey
 from securelib.config import Config, Device
+from securelib.groupkeys import CentralizedGroupKeys
 from securelib.identity import DeviceKeys
 from securelib.log import get_logger
+from securelib.message import peek_header
 from securelib.mqtt import make_client
 
 # Commands a device may be asked to send, and their argument checks.
@@ -84,11 +87,10 @@ def validate_send(cfg: Config, topic: str, cmd: str, args: dict[str, Any]) -> di
 class DeviceBase:
     kind = "base"
 
-    def __init__(self, cfg: Config, dev: Device, mode: str = "off") -> None:
+    def __init__(self, cfg: Config, dev: Device, mode: str | None = None) -> None:
         self.cfg = cfg
         self.dev = dev
         self.log = get_logger(dev.log_name)
-        self.channel = Channel(dev.id, mode=mode)
         self.events = EventLog()
         self.lock = threading.RLock()
         self.client: mqtt.Client | None = None
@@ -96,7 +98,8 @@ class DeviceBase:
         self.reset_state()
 
         # Identity keys are generated here, on the device, and never leave it.
-        self.keys, created = DeviceKeys.load_or_create(cfg.device_key_dir(dev.id), dev.id)
+        key_dir = cfg.device_key_dir(dev.id)
+        self.keys, created = DeviceKeys.load_or_create(key_dir, dev.id)
         verb = "generated new" if created else "loaded"
         self.log.info(
             f"{verb} identity keys (Ed25519 + X25519, private keys stay on this device) "
@@ -105,6 +108,40 @@ class DeviceBase:
         from devices.trustwatch import TrustWatch
 
         self.trust = TrustWatch(self)
+        self.group = CentralizedGroupKeys(
+            dev.id,
+            self.keys.sign_key,
+            kdc_key=self.trust.kdc_key,
+            publish=self._publish_json,
+            may_join=lambda: self.connected and self.trust.trusted,
+            on_alert=self.alert,
+        )
+        self._mode_path = key_dir / "security.json"
+        self.channel = Channel(
+            dev.id,
+            mode or self._load_mode(),
+            group=self.group,
+            signer=self.keys.sign_key,
+            peer_key=self.trust.peer_key,
+            requires_signature=self._requires_signature,
+            seq_path=key_dir / "seq",
+            suite=os.environ.get("BBIOT_AEAD", "AES-GCM"),
+        )
+        self._announced_epoch: int | None = None
+        self._last_catch_up = 0.0
+        self.log.info(f"security {self.channel.mode.upper()}")
+
+    def _load_mode(self) -> str:
+        try:
+            return json.loads(self._mode_path.read_text())["mode"]
+        except (OSError, ValueError, KeyError):
+            return os.environ.get("BBIOT_SECURITY", "on")
+
+    def _requires_signature(self, topic: str) -> bool:
+        """Commands and alarms carry the sender's Ed25519 signature."""
+        return any(
+            topic in (d.topics.get("cmd"), d.topics.get("alarm")) for d in self.cfg.devices.values()
+        )
 
     # --- to override -----------------------------------------------------------
 
@@ -126,21 +163,52 @@ class DeviceBase:
     # --- MQTT ----------------------------------------------------------------------
 
     def publish(self, topic: str, body: dict[str, Any], *, retain: bool = False) -> None:
-        payload = self.channel.seal(topic, body)
+        try:
+            payload = self.channel.seal(topic, body)
+        except NoGroupKey as exc:
+            self.log.info(f"not sent on {topic}: {exc}")
+            raise
         if self.client is not None:
             self.client.publish(topic, payload, qos=1, retain=retain)
         self.events.add("sent", topic=topic, size=len(payload), body=body)
 
     def publish_state(self) -> None:
         if "state" in self.dev.topics:
-            self.publish(self.dev.topics["state"], self.state(), retain=True)
+            # Without a group key yet, it is republished once one arrives (_housekeeping).
+            with contextlib.suppress(NoGroupKey):
+                self.publish(self.dev.topics["state"], self.state(), retain=True)
+
+    def _maybe_catch_up(self, payload: bytes) -> None:
+        """Traffic under a NEWER epoch means we missed a rekey: ask the KDC again
+        (rate-limited). A revoked device is simply refused by the KDC."""
+        header = peek_header(payload)
+        current = self.group.epoch or 0
+        if header is None or header.epoch <= current:
+            return
+        now = time.monotonic()
+        if now - self._last_catch_up > 10:
+            self._last_catch_up = now
+            self.log.info(f"saw epoch {header.epoch} > mine ({current}) → asking the KDC")
+            self.group.rejoin()
+
+    def _publish_json(self, topic: str, msg: dict) -> None:
+        """Key-exchange messages: plain JSON, public values only."""
+        if self.client is not None:
+            self.client.publish(topic, json.dumps(msg, separators=(",", ":")), qos=1)
+
+    def _housekeeping(self) -> None:
+        self.group.tick()
+        epoch = self.group.epoch
+        if self.channel.mode == "on" and epoch is not None and epoch != self._announced_epoch:
+            self._announced_epoch = epoch
+            self.publish_state()
 
     def _on_connect(self, client: mqtt.Client, _u: Any, _f: Any, rc: Any, _p: Any) -> None:
         if rc.is_failure:
             self.log.info(f"broker refused connection: {rc}")
             return
         self.connected = True
-        for topic in self.subscriptions():
+        for topic in self.subscriptions() + self.group.subscriptions():
             client.subscribe(topic, qos=1)
         self.log.info(
             f"connected to broker {self.cfg.broker_host}:{self.cfg.broker_port} "
@@ -153,7 +221,12 @@ class DeviceBase:
         self.log.info("disconnected from broker, retrying")
 
     def _on_message(self, _c: mqtt.Client, _u: Any, msg: mqtt.MQTTMessage) -> None:
+        if msg.topic.startswith("kdc/"):
+            self.group.handle(msg.topic, msg.payload)
+            return
         opened = self.channel.open(msg.topic, msg.payload)
+        if not opened.ok and (opened.reason or "").startswith("wrong epoch"):
+            self._maybe_catch_up(msg.payload)
         if not opened.ok:
             self.log.info(f"✗ REJECTED on {msg.topic}: {opened.reason}")
             self.events.add(
@@ -166,6 +239,8 @@ class DeviceBase:
             size=len(msg.payload),
             sender=opened.sender,
             seq=opened.seq,
+            epoch=opened.epoch,
+            signed=opened.signed,
             body=opened.body,
         )
         with self.lock:
@@ -186,8 +261,19 @@ class DeviceBase:
     def send(self, topic: str, cmd: str, args: dict[str, Any]) -> dict[str, Any]:
         body = validate_send(self.cfg, topic, cmd, args)
         self.log.info(f"→ sending cmd={cmd} to {topic}")
-        self.publish(topic, body)
+        try:
+            self.publish(topic, body)
+        except NoGroupKey as exc:
+            raise SendError(str(exc)) from exc
         return body
+
+    def set_security(self, mode: str) -> None:
+        self.channel.mode = mode  # validates
+        self._mode_path.write_text(json.dumps({"mode": mode}))
+        self.log.info(f"security {mode.upper()}")
+        self._announced_epoch = None
+        if mode == "off":
+            self.publish_state()
 
     def reset(self) -> None:
         with self.lock:
@@ -205,6 +291,7 @@ class DeviceBase:
             "connected": self.connected,
             "state": state,
             "security": self.channel.mode,
+            "group": self.group.status(),
             "identity": self.trust.snapshot(),
             "last_event": self.events.last_id,
         }
@@ -268,6 +355,18 @@ class DeviceBase:
                 if url.path == "/reset":
                     device.reset()
                     return self._json(200, device.snapshot())
+                if url.path == "/security":
+                    try:
+                        device.set_security(str(data.get("mode", "")))
+                    except ValueError as exc:
+                        return self._json(422, {"error": str(exc)})
+                    return self._json(200, device.snapshot())
+                if url.path == "/rejoin":
+                    auth = str(data.get("auth", "signed"))
+                    if auth not in ("signed", "unsigned"):
+                        return self._json(422, {"error": "auth must be signed or unsigned"})
+                    device.group.rejoin(auth)
+                    return self._json(200, {"rejoin": auth})
                 return self._json(404, {"error": "not found"})
 
         bind = os.environ.get("BBIOT_CONTROL_BIND", "127.0.0.1")
@@ -284,3 +383,4 @@ class DeviceBase:
             time.sleep(1)
             with self.lock:
                 self.tick()
+            self._housekeeping()

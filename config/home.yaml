@@ -26,6 +26,12 @@ translog:
   host: localhost
   port: 8444
 
+# Key Distribution Center control API (centralized group keys). Localhost only;
+# devices talk to the KDC over MQTT, through the untrusted broker.
+kdc:
+  host: localhost
+  port: 8095
+
 # Each device process exposes a small simulator control API on its port
 # (state, events, "send"). Localhost only; it is demo harness, not protocol.
 devices:
@@ -72,4 +78,4 @@ devices:
     topics: {cmd: home/door/garage/cmd, state: home/door/garage/state}
 
 # Infrastructure identities that also get mTLS client certificates.
-services: [hub, cli, dashboard, evil-proxy]
+services: [hub, cli, dashboard, evil-proxy, kdc]

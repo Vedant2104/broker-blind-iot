@@ -17,7 +17,14 @@ from cryptography.x509.oid import NameOID
 from cli import remote
 from cli.actions import Emit
 from rootca import approvals
-from rootca.root import PkiPaths, init_pki, issue_device_cert, load_admin_key, load_roster
+from rootca.root import (
+    PkiPaths,
+    init_pki,
+    issue_device_cert,
+    issue_revocation,
+    load_admin_key,
+    load_roster,
+)
 from securelib.config import Config
 from securelib.pki import TrustError, pairing_code, raw_public, read_x25519_extension
 from securelib.services import DirectoryClient, ServiceError
@@ -114,11 +121,25 @@ def approve(cfg: Config, admin: str, action_id: str, emit: Emit, *, auto_issue: 
     return updated
 
 
+def revoke(cfg: Config, device: str, emit: Emit) -> str:
+    """Post a remove-device action; at 2 of 3 approvals the root signs the revocation,
+    the KDC drops the device and rekeys."""
+    if directory(cfg).get_cert(device) is None:
+        raise ServiceError(f"{device} has no certificate to revoke")
+    action = approvals.new_action("remove-device", device)
+    aid = directory(cfg).post_action(action, None)["id"]
+    emit(f"[revoke] action {aid}: remove-device {device} — needs 2 of 3 admin approvals")
+    emit(f"[revoke]    next: bbiot admin approve --admin A --action {aid}")
+    return aid
+
+
 def issue(cfg: Config, action_id: str, emit: Emit) -> dict[str, Any]:
     d = directory(cfg)
     entry = d.get_action(action_id)
     if entry is None:
         raise ServiceError(f"no action {action_id}")
+    if entry["action"]["type"] == "remove-device":
+        return _issue_revocation(cfg, entry, emit)
     pem, approvers = issue_device_cert(
         pki_paths(cfg), entry["action"], entry["csr_pem"].encode(), entry["approvals"]
     )
@@ -136,6 +157,25 @@ def issue(cfg: Config, action_id: str, emit: Emit) -> dict[str, Any]:
     )
     emit(f"[pair] ✓ {device} commissioned — it will pick up its certificate within seconds")
     return published
+
+
+def _issue_revocation(cfg: Config, entry: dict, emit: Emit) -> dict[str, Any]:
+    d = directory(cfg)
+    device = entry["action"]["device_id"]
+    current = d.get_cert(device)
+    if current is None:
+        raise ServiceError(f"{device} has no certificate")
+    serial = format(x509.load_pem_x509_certificate(current["cert_pem"].encode()).serial_number, "x")
+    signed, approvers = issue_revocation(
+        pki_paths(cfg), entry["action"], entry["approvals"], serial
+    )
+    emit(
+        f"[rootca] threshold met ({' + '.join(approvers)}) → offline root signed the "
+        f"revocation of {device} (serial {serial[:16]}…)"
+    )
+    d.publish_revocation(signed)
+    emit(f"[directory] revocation of {device} published; the KDC will drop it and rekey")
+    return signed
 
 
 def bootstrap(cfg: Config, emit: Emit, wait: float = 60.0) -> None:
