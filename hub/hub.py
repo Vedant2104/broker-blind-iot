@@ -42,6 +42,12 @@ class Hub(DeviceBase):
     def subscriptions(self) -> list[str]:
         return ["home/#", "hb/+", "ack/+"]
 
+    def set_security(self, mode: str) -> None:
+        super().set_security(mode)
+        # Sequence numbers keep counting on plaintext (OFF) traffic, which proves
+        # nothing; start gap tracking afresh so that isn't mistaken for drops.
+        self.monitor = Monitor()
+
     # --- liveness ----------------------------------------------------------------------------
 
     def _on_message(self, c: mqtt.Client, u: Any, msg: mqtt.MQTTMessage) -> None:

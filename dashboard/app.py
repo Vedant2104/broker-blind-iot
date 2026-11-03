@@ -191,6 +191,8 @@ def _start_device_poller(cfg: Config, live: Live) -> None:
                     continue
                 if ev["kind"] not in ("accepted", "rejected"):
                     continue
+                if dev == "hub" and ev["kind"] == "accepted":
+                    continue  # the hub sees everything; its feed would drown the others
                 item = {"device": dev, **ev}
                 live.device_feed.append(item)
                 live.push({"type": "device_event", "item": item})
@@ -362,6 +364,16 @@ ACTIONS: dict[str, ActionSpec] = {
         NoParams,
         lambda p: "bbiot keymode decentralized",
         lambda cfg, p, emit: actions.set_keymode(cfg, "decentralized", emit),
+    ),
+    "attack.compromised_device": ActionSpec(
+        NoParams,
+        lambda p: "bbiot attack compromised-device --device thermostat",
+        lambda cfg, p, emit: actions.attack_compromised_device(cfg, emit, "thermostat"),
+    ),
+    "attack.counterfeit": ActionSpec(
+        NoParams,
+        lambda p: "bbiot attack counterfeit",
+        lambda cfg, p, emit: actions.attack_counterfeit(cfg, emit),
     ),
     "security.on": ActionSpec(
         NoParams,

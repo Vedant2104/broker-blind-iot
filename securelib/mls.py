@@ -251,7 +251,11 @@ class DecentralizedGroupKeys:
             return
         with self._lock:
             mine = (self._group or {}).get("group_id")
-        if mine == msg.get("group_id") and self._key is not None:
+            my_epoch = int((self._group or {}).get("epoch", -1))
+        # Same group and we're current: nothing to do. But a welcome for a NEWER epoch of
+        # our own group means we were removed and re-added while offline — take it.
+        same_group = mine == msg.get("group_id") and self._key is not None
+        if same_group and int(msg.get("epoch", -1)) <= my_epoch:
             return
         info = self.mls.call("welcome", welcome=msg["welcome"])
         self._kp_published = False  # key package consumed — publish a fresh one
@@ -314,6 +318,12 @@ class DecentralizedGroupKeys:
         if not force and (now - self._kp_published_at < 15 or now - self._last_rejoin < 10):
             return
         self._last_rejoin = time.monotonic()
+        # Key packages are single-use and the admin may already have spent our last one
+        # (e.g. on a welcome we never received): always offer a fresh one with the request.
+        try:
+            self.publish_key_package()
+        except Exception as exc:  # noqa: BLE001 - directory trouble: the request may still help
+            self.log.info(f"could not publish a fresh key package: {exc}")
         ts = int(time.time() * 1000)
         self.publish(
             f"{REJOIN_TOPIC}/{self.device_id}",
@@ -330,6 +340,7 @@ class DecentralizedGroupKeys:
         pub = self.certified_key(device)
         ts = int(msg.get("ts", 0))
         if pub is None or abs(time.time() * 1000 - ts) > 30_000:
+            self.log.info(f"rejoin from {device} ignored: no verified certificate or stale")
             return
         if not verify_rejoin(pub, device, ts, str(msg.get("sig", ""))):
             self.log.info(f"✗ forged MLS rejoin request for {device} ignored")
@@ -344,7 +355,8 @@ class DecentralizedGroupKeys:
                 return  # just (re-)added it; its welcome is probably still in flight
         kp = self.directory.mls_get_key_package(device)
         if kp is None or kp in self._used_kps:
-            return  # wait until it publishes a fresh key package
+            self.log.info(f"rejoin from {device}: waiting for a fresh key package")
+            return
         if device in members:
             self._commit_remove([device], reason=f"{device} lost its MLS state")
         self._add([device])
@@ -412,6 +424,7 @@ class DecentralizedGroupKeys:
             claim = self.mls.call("inspect_key_package", key_package=kp)
             pub = self.certified_key(dev)
             if claim["identity"] != dev or pub is None:
+                self.log.info(f"not adding {dev}: key package identity/certificate not verified")
                 continue
             if claim["signature_key"] != raw_public(pub).hex():
                 reason = (

@@ -14,7 +14,7 @@ const PAGES = [
   { name: "Benchmarks", phase: 8 },
 ];
 
-const ORDER = ["phone", "front-door", "back-door", "thermostat", "smoke-kitchen", "garage-lock"];
+const ORDER = ["hub", "phone", "front-door", "back-door", "thermostat", "smoke-kitchen", "garage-lock"];
 
 export default function App() {
   const live = useLive();
@@ -51,7 +51,7 @@ export default function App() {
       <main className="grid min-h-0 flex-1 overflow-hidden grid-cols-[minmax(320px,1fr)_minmax(0,2.2fr)_minmax(340px,1.2fr)] gap-4 p-4">
         <section className="feed min-h-0 min-w-0 space-y-3 overflow-y-auto pr-1">
           {devices.map((d) => (
-            <DeviceCard key={d.id} d={d}>
+            <DeviceCard key={d.id} d={d} hub={live.devices["hub"]}>
               {d.id === "phone" && <PhoneControls run={run} busy={busy} />}
             </DeviceCard>
           ))}

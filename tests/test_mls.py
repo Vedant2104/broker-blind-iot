@@ -268,3 +268,31 @@ def test_epoch_refused_until_member_verifies_then_accepted(home: Home) -> None:
         assert home.g["front-door"].current() == home.g["phone"].current()
     finally:
         Home.NAMES = ("phone", "front-door", "thermostat")
+
+
+def test_member_removed_while_offline_accepts_readd(home: Home) -> None:
+    """Regression: a device that missed its own removal (it was disconnected, e.g.
+    quarantined) must still accept the welcome that re-adds it."""
+    home.bus.drop.add("mls/commit")  # it never hears about its removal
+    home.trusted.discard("thermostat")
+    home.run(1)
+    home.bus.drop.clear()
+    assert home.g["thermostat"].current() is not None  # still thinks it's in
+    home.g["thermostat"].publish_key_package()  # fresh key package for the re-add
+    home.trusted.add("thermostat")
+    home.run(1)
+    assert home.g["thermostat"].current() == home.g["phone"].current()
+
+
+def test_rejoin_request_comes_with_a_fresh_key_package(home: Home) -> None:
+    """Regression: if the admin spent a member's key package on a welcome the member
+    never got, the member's rejoin request must offer a new one."""
+    home.bus.drop.update({"mls/welcome", "mls/commit"})
+    g = home.g["thermostat"]
+    g._group = g._key = None  # it lost its state
+    g.request_rejoin(force=True)  # admin re-adds it; the welcome is dropped
+    home.bus.drop.clear()
+    assert g.current() is None
+    home.g["phone"]._added_at.clear()  # (skip the admin's 8-second grace in this test)
+    g.request_rejoin(force=True)  # asks again — with a fresh key package this time
+    assert g.current() == home.g["phone"].current()

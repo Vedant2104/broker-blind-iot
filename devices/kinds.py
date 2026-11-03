@@ -105,7 +105,11 @@ class SmokeSensor(DeviceBase):
         if len(self.pending_alarms) < before:
             self.log.info(f"✓ hub acknowledged alarm (seq {seq})")
 
+    REPORT_SECONDS = 60  # keep reporting an unacked alarm in heartbeats this long
+
     def unacked_alarms(self) -> list[dict[str, Any]]:
+        cutoff = int(time.time() * 1000) - self.REPORT_SECONDS * 1000
+        self.pending_alarms = [a for a in self.pending_alarms if a["ts_ms"] >= cutoff]
         return [
             {"seq": a["seq"], "ts_ms": a["ts_ms"]}
             for a in self.pending_alarms

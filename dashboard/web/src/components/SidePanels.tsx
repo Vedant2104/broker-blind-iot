@@ -16,6 +16,16 @@ const ATTACKS = [
     hint: "OFF: unsigned DH, group key stolen · ON: signed DH, caught",
   },
   {
+    id: "compromised_device",
+    name: "7 · Compromised thermostat",
+    hint: "Subscribes to door commands — hub quarantines it, group rekeys",
+  },
+  {
+    id: "counterfeit",
+    name: "8 · Counterfeit device",
+    hint: "No root-signed cert: refused at TLS, hub, door and KDC",
+  },
+  {
     id: "swap_key",
     name: "9 · Directory swaps a key",
     hint: "Forged cert (KDC mode) or key package (MLS mode) — root/log/pin catch it",
@@ -48,7 +58,7 @@ export function AttackPanel({
 
   return (
     <Card className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-      <CardHeader title="Broker attacks" right={<span className="text-[13px] text-muted">7–8 in phase 6</span>} />
+      <CardHeader title="Broker attacks" right={<span className="text-[13px] text-muted">all 10</span>} />
       <div className="space-y-2 p-3">
         {ATTACKS.map((a) => {
           const r = latest(a.id);

@@ -303,6 +303,12 @@ class DeviceBase:
             f"(mTLS as '{self.dev.id}'), subscribed: {', '.join(self.subscriptions()) or '-'}"
         )
         self.publish_state()
+        # After an outage (or a lifted quarantine) our key may be stale while we can't
+        # tell — we might hear no traffic at all. Re-check with the key managers.
+        if self.group.current() is not None:
+            self.group.rejoin()
+        if self.mls is not None and self.mls.current() is not None:
+            self.mls.request_rejoin()
 
     def _on_disconnect(self, *_args: Any) -> None:
         self.connected = False

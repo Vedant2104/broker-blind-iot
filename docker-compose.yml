@@ -267,6 +267,8 @@ services:
     volumes:
       - ./secrets/pki/public:/app/secrets/pki/public:ro
       - ./secrets/tls/identities/dashboard:/app/secrets/tls/identities/dashboard:ro
+      # attack 8 demo: the counterfeit device's (transport-only) identity
+      - ./secrets/tls/identities/counterfeit:/app/secrets/tls/identities/counterfeit:ro
 
   # The admin's machine: `docker compose run --rm cli <command>`.
   cli:

@@ -1,8 +1,7 @@
 """Attacks against the running stack, security OFF vs ON.
 
 OFF (TLS only): attacks 1-5 succeed, attack 6 (unsigned DH) steals the key.
-ON (broker-blind): attacks 1-4 and 6 are blocked; 5 (drop) still succeeds until
-phase 6 adds detection.
+ON (broker-blind): attacks 1-4 and 6 are blocked; 5 (drop) is detected by the hub.
 Run with `make test-integration` (needs `docker compose up -d`)."""
 
 from __future__ import annotations
@@ -60,7 +59,7 @@ def test_security_off_attacks_succeed(cfg, name: str) -> None:
         ("modify", "BLOCKED", "tag invalid"),
         ("replay", "BLOCKED", "replay"),
         ("redirect", "BLOCKED", "wrong topic"),
-        ("drop", "SUCCEEDED", ""),  # detection arrives in phase 6
+        ("drop", "DETECTED", "hub detected"),  # can't be prevented, but is noticed
     ],
 )
 def test_security_on_attacks(cfg, name: str, expected: str, reason: str) -> None:

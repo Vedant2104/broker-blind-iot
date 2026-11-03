@@ -16,16 +16,17 @@ command, and the overhead is measured.
 | 3 | securelib AEAD + topic/seq/time/epoch binding, replay window | ✅ done (with 4) |
 | 4 | Centralized group keys (KDC), rekey on revoke, attack 6 | ✅ done (with 3) |
 | 5 | Decentralized group keys (MLS via OpenMLS sidecar), attacks 9–10 | ✅ done |
-| 6 | Hub, heartbeats, acks, MUD policy, quarantine | 🟡 core done (dashboard cards, integration tests, docs pending) |
-| 7 | Full dashboard | |
+| 6 | Hub, heartbeats, acks, MUD policy, quarantine, attacks 5/7/8 | ✅ done |
+| 7 | Full dashboard | next |
 | 8 | Benchmarks | |
 | 9 | Polish | |
 
 ## Architecture
 
 ```
- devices ──mTLS──> evil-broker :8883 ──mTLS──> Mosquitto (stock)           host :8884
-    │              control API :8090 (arms attacks)
+ devices ──mTLS──> hub gateway :8883 ──mTLS──> evil-broker ──mTLS──> Mosquitto (stock)
+    │              (trusted; MUD policy,       host :8885       host :8884
+    │               liveness, quarantine)      control API :8090 (arms attacks)
     ├──HTTPS──> key directory :8443 ──HTTPS──> transparency log :8444
     │           (public certs only)            (RFC 6962 Merkle tree)
     └──MQTT (via the broker)──> KDC  (signed X25519 key exchange, group keys, rekeys)
@@ -96,6 +97,31 @@ derived among the devices themselves with **MLS (RFC 9420, TreeKEM)**:
   and handshake messages; a device that missed a commit (e.g. the broker dropped it)
   catches up from there.
 
+### Hub: policy, liveness, quarantine
+
+The hub is a commissioned device and the **MQTT gateway every client connects
+through** (host :8883). It is trusted (it runs on the LAN gateway); the broker behind
+it is not. With security ON:
+
+- **MUD policy** — `config/mud/<id>.json` lists each identity's allowed publish topics,
+  subscribe filters and command senders. The gateway checks every PUBLISH and SUBSCRIBE
+  (a subscription filter must lie *inside* an allowed one, so wildcards can't widen it).
+  Identities without a profile may do nothing. Devices also refuse commands from senders
+  their profile doesn't allow. Regenerate after changing home.yaml:
+  `uv run python -c "from securelib.config import load_config; from hub.policy import write_profiles; from pathlib import Path; write_profiles(load_config(), Path('config/mud'))"`.
+- **Quarantine** on any violation: the connection is cut and refused from then on; a
+  **signed, versioned quarantine notice** (retained on `hub/quarantine`) makes devices
+  distrust the identity and the KDC remove it and rekey; as MLS admin the hub removes it
+  from the MLS group; a `remove-device` action is posted for 2-of-3 admin confirmation.
+- **Liveness** — critical devices send signed heartbeats every 5 s; every command is
+  answered with a signed end-to-end ack (the sender alerts if it's missing); smoke alarms
+  are acked by the hub and retried. The hub flags **sequence gaps** (it sees all of a
+  device's traffic, and seq numbers are in every authenticated header), **missing
+  heartbeats** and **unacknowledged alarms**, with time-to-detect.
+
+The broker can still drop messages — it can't be prevented — but it can no longer do so
+unnoticed.
+
 ### Identity and PKI
 
 | Piece | What it does |
@@ -116,7 +142,7 @@ securelib/   shared device library (core of the project)
 cli/         the `bbiot` CLI; cli/actions.py is shared with the dashboard
 devices/     simulated locks, thermostat, smoke sensor, phone
 evilbroker/  MQTT man-in-the-middle proxy that implements broker attacks
-hub/         MUD policy, heartbeats/acks, alerts, quarantine          (phase 6)
+hub/         policy gateway (MUD), liveness monitor, quarantine notices, hub device
 directory/   key directory (public certs only) + admin action board
 translog/    RFC 6962 Merkle tree (merkle.py) + log service
 rootca/      offline root CA (root.py) + 2-of-3 admin approvals (approvals.py)
@@ -182,6 +208,10 @@ uv run bbiot attack redirect --from home/door/front/cmd --to home/door/back/cmd 
 uv run bbiot attack drop --topic home/smoke/kitchen       # 5. smoke alarm silently dropped
 uv run bbiot attack mitm-dh --unsigned                    # 6. key exchange MITM (insecure DH)
 uv run bbiot attack mitm-dh                               # 6. ...signed DH: caught
+uv run bbiot attack compromised-device --device thermostat  # 7. subscribes to door topics
+uv run bbiot attack counterfeit                           # 8. device without a root cert
+uv run bbiot liveness                                     # heartbeats + drops as the hub sees them
+uv run bbiot quarantine list                              # ... and release --device <id>
 uv run bbiot attack swap-key --device thermostat          # 9. directory serves the attacker's key
 uv run bbiot attack kdc-vs-directory                      # 10. compromised KDC + directory
 uv run bbiot keymode decentralized                        # switch to MLS (and back: centralized)
@@ -196,8 +226,10 @@ Run them with `bbiot security off`, then again with `bbiot security on`:
 | 2 modify | ☠ thermostat set to 30°C | 🛡 `tag invalid` |
 | 3 replay | ☠ door unlocks again | 🛡 `replay (seq N already seen)` |
 | 4 redirect | ☠ back door unlocks | 🛡 `wrong topic` |
-| 5 drop | ☠ alarm lost silently | ☠ still lost (detection: phase 6) |
+| 5 drop | ☠ alarm lost silently | 🔔 DETECTED by the hub (sequence gap / unacked alarm, with time-to-detect) |
 | 6 MITM DH | ☠ `--unsigned`: group key stolen | 🛡 signed: `KDC signature invalid` |
+| 7 compromised device | ☠ thermostat reads door commands | 🛡 hub blocks + quarantines, rekey; it can't decrypt new traffic |
+| 8 counterfeit | ☠ unlocks the door (plaintext) | 🛡 refused at TLS, at the hub, by the door and by the KDC |
 | 9 swap key | ☠ a client without verification trusts the attacker's key | 🛡 KDC mode: `certificate signature does not verify against the root` · MLS mode: `key package … NOT its certified key` |
 
 Attack 10 depends on the key mode, not the security toggle:
@@ -237,7 +269,9 @@ rewritten to a Windows path.
 
 | Port | Service |
 |---|---|
-| 8883 | evil-broker (where every client connects) |
+| 8883 | hub policy gateway (where every client connects) |
+| 8885 | evil-broker (behind the hub; reachable only to demo bypass attempts) |
+| 8107 | hub control API (state, quarantine release) |
 | 8884 | Mosquitto itself |
 | 8090 | evil-broker control API |
 | 8443 | key directory (HTTPS) |

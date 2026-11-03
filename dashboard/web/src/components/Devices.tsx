@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DoorClosed, DoorOpen, Flame, Smartphone, Thermometer } from "lucide-react";
+import { DoorClosed, DoorOpen, Flame, Router, Smartphone, Thermometer } from "lucide-react";
 import { Badge, Button, Card, cn } from "./ui";
 import type { DeviceSnap } from "../live";
 
@@ -19,6 +19,13 @@ function describe(d: DeviceSnap): { text: string; tone: "ok" | "bad" | "warn" | 
       return s.alarm ? { text: "SMOKE ALARM", tone: "bad" } : { text: "No smoke", tone: "ok" };
     case "app":
       return { text: `${s.alarms_received ?? 0} alarm(s) received`, tone: "muted" };
+    case "hub": {
+      const q = Object.keys((s.quarantined as Record<string, string>) ?? {});
+      const gw = (s.gateway as Record<string, number>) ?? {};
+      return q.length
+        ? { text: `QUARANTINED: ${q.join(", ")}`, tone: "bad" }
+        : { text: `gateway ok · ${gw.blocked_packets ?? 0} blocked`, tone: "ok" };
+    }
     default:
       return { text: "—", tone: "muted" };
   }
@@ -28,6 +35,7 @@ function Icon({ d }: { d: DeviceSnap }) {
   const cls = "h-7 w-7 text-muted";
   if (d.kind === "lock") return d.state?.locked ? <DoorClosed className={cls} /> : <DoorOpen className="h-7 w-7 text-bad" />;
   if (d.kind === "thermostat") return <Thermometer className={cls} />;
+  if (d.kind === "hub") return <Router className={cls} />;
   if (d.kind === "smoke") return <Flame className={cn(cls, Boolean(d.state?.alarm) && "text-bad")} />;
   return <Smartphone className={cls} />;
 }
@@ -64,9 +72,23 @@ function TrustBadge({ d }: { d: DeviceSnap }) {
 
 const toneText = { ok: "text-ok", bad: "text-bad", warn: "text-warn", muted: "text-muted" };
 
-export function DeviceCard({ d, children }: { d: DeviceSnap; children?: React.ReactNode }) {
+type Liveness = Record<string, { heartbeat_age: number | null; heartbeat_late: boolean }>;
+
+export function DeviceCard({
+  d,
+  hub,
+  children,
+}: {
+  d: DeviceSnap;
+  hub?: DeviceSnap;
+  children?: React.ReactNode;
+}) {
   const online = d.reachable && d.connected;
   const { text, tone } = describe(d);
+  const hubState = (hub?.state ?? {}) as { liveness?: Liveness; quarantined?: Record<string, string> };
+  const hb = hubState.liveness?.[d.id];
+  const quarantined = hubState.quarantined?.[d.id];
+  const hbLate = !!hb && (hb.heartbeat_late || (hb.heartbeat_age ?? 0) > 15);
   return (
     <Card className="p-4">
       <div className="flex items-start gap-3">
@@ -74,14 +96,23 @@ export function DeviceCard({ d, children }: { d: DeviceSnap; children?: React.Re
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <div className="truncate font-bold">{d.label ?? d.id}</div>
-            <TrustBadge d={d} />
+            {quarantined ? (
+              <Badge tone="bad" title={quarantined}>
+                Quarantined
+              </Badge>
+            ) : (
+              <TrustBadge d={d} />
+            )}
           </div>
           <div key={text} className={cn("flash mt-1 rounded text-[22px] font-extrabold", toneText[tone])}>
             {online ? text : "offline"}
           </div>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-muted">
             <span>
-              heartbeat: <span className="text-muted/70">n/a (phase 6)</span>
+              heartbeat:{" "}
+              <span className={hbLate ? "font-bold text-bad" : "text-fg/80"}>
+                {d.kind === "hub" ? "—" : hb?.heartbeat_age != null ? `${hb.heartbeat_age}s ago` : "—"}
+              </span>
             </span>
             <span title="group key epoch this device holds">
               epoch: <span className="font-mono text-fg/80">{d.group?.epoch ?? "—"}</span>
