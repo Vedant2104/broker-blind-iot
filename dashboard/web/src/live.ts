@@ -163,6 +163,8 @@ function reducer(state: LiveState, msg: Msg): LiveState {
         trust: msg.trust ?? {},
         logCheck: msg.log_check ?? null,
       };
+    case "modes":
+      return { ...state, security: msg.security, keymode: msg.keymode };
     case "epoch":
       return { ...state, epoch: msg.epoch };
     case "log":

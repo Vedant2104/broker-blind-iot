@@ -73,6 +73,7 @@ class Live:
         self.log_size: int | None = None
         self.epoch: int | None = None  # KDC epoch
         self.shown_epoch: int | None = None
+        self._shown_modes: tuple[str, str] | None = None
         self._queues: set[asyncio.Queue] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ids = itertools.count(1)
@@ -128,6 +129,18 @@ class Live:
         modes = {d.get("keymode") for d in self.devices.values() if d.get("reachable")}
         modes.discard(None)
         return modes.pop() if len(modes) == 1 else ("mixed" if modes else "centralized")
+
+    def push_modes(self) -> None:
+        """Tell browsers when the security / key mode the devices report changes
+        (the top-bar toggles follow the devices, not the click)."""
+        modes = (self.security(), self.keymode())
+        if modes != self._shown_modes:
+            self._shown_modes = modes
+            self.push({"type": "modes", "security": modes[0], "keymode": modes[1]})
+            shown = self.display_epoch()
+            if shown != self.shown_epoch:
+                self.shown_epoch = shown
+                self.push({"type": "epoch", "epoch": shown})
 
     def snapshot(self) -> dict:
         return {
@@ -213,12 +226,14 @@ def _start_device_poller(cfg: Config, live: Live) -> None:
                 if live.devices.get(dev, {}).get("reachable", True):
                     live.devices[dev] = {"id": dev, "reachable": False}
                     live.push({"type": "device", "device": live.devices[dev]})
+                    live.push_modes()
                 continue
             snap["reachable"] = True
             snap.pop("last_event", None)
             if live.devices.get(dev) != snap:
                 live.devices[dev] = snap
                 live.push({"type": "device", "device": snap})
+                live.push_modes()
             for ev in events:
                 marks[dev] = max(marks[dev], ev["id"])
                 if ev["kind"] == "alert":
@@ -766,6 +781,7 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
                 reason=result.reason,
                 command=command,
             )
+        live.push_modes()
         if name == "demo.reset":
             live.incidents.clear()
             live.log_check = None

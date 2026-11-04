@@ -174,3 +174,17 @@ def test_unexpected_os_error_is_a_readable_502(
     r = client.post("/api/actions/attack.read")
     assert r.status_code == 502
     assert "no such file" in r.json()["detail"]
+
+
+def test_mode_changes_are_pushed(client: TestClient) -> None:
+    """The top-bar toggles follow the devices' reported mode without a reload."""
+    live = client.app.state.live
+    seen: list[dict] = []
+    live.push = seen.append
+    live.devices = {"front-door": {"reachable": True, "security": "off", "keymode": "centralized"}}
+    live.push_modes()
+    live.push_modes()  # unchanged: no second message
+    live.devices["front-door"]["security"] = "on"
+    live.push_modes()
+    modes = [m for m in seen if m["type"] == "modes"]
+    assert [m["security"] for m in modes] == ["off", "on"]
