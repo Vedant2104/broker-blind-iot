@@ -311,7 +311,7 @@ rewritten to a Windows path.
 ```sh
 uv run bbiot bench quick                     # ~10 s: crypto, message cost, groups 10/100, 1 drop
 docker compose run --rm cli bench full       # report numbers: groups up to 1000 incl. MLS, charts
-uv run bbiot bench crypto                    # crypto timings only — run this on the Raspberry Pi
+uv run bbiot bench crypto                    # crypto timings only (no broker needed)
 uv run bbiot bench charts                    # redraw PNGs from the CSVs (matplotlib)
 ```
 
@@ -329,9 +329,8 @@ the dashboard's Benchmarks page draws both and has a "Run quick benchmark" butto
 | `drop_detection.csv` | seconds until the hub alerts on a dropped smoke alarm, and which check caught it | runs attack 5 against the live home (security ON) |
 | `charts/*.png` | the same data as charts for the report | matplotlib |
 
-Raspberry Pi: copy the repo, `pip install .`, run `bbiot bench crypto`, and put the
-resulting `crypto-aarch64.csv` in `bench/results/` — the dashboard adds it as a column.
-Not measured yet in this repo.
+Crypto timings are measured on the development laptop only (x86_64); no
+Raspberry Pi or ESP32 was available, so there are no embedded-board numbers.
 
 ## Ports (all bound to 127.0.0.1)
 

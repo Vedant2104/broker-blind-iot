@@ -520,7 +520,7 @@ def bench_full() -> None:
 
 @bench_app.command("crypto")
 def bench_crypto(n: int = typer.Option(5000, help="Repetitions per operation.")) -> None:
-    """Crypto timings only. Run this on the Raspberry Pi too (no broker needed)."""
+    """Crypto timings only (no broker needed)."""
     from bench import crypto
 
     crypto.run(_emit, n)

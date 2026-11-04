@@ -37,7 +37,7 @@ def host_info() -> dict[str, str]:
     """What machine the numbers came from (crypto timings differ per CPU)."""
     machine = platform.machine() or "?"
     model = ""
-    with contextlib.suppress(OSError):  # Raspberry Pi and other ARM boards name themselves
+    with contextlib.suppress(OSError):  # ARM boards name themselves here
         model = Path("/proc/device-tree/model").read_text("utf-8").strip("\x00\n ")
     label = os.environ.get("BBIOT_BENCH_HOST_LABEL")
     return {

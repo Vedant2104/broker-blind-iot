@@ -1,5 +1,4 @@
-"""Crypto operation timings on this machine (run the same command on a Raspberry Pi
-to fill the Pi column: `bbiot bench crypto`)."""
+"""Crypto operation timings on this machine (`bbiot bench crypto`)."""
 
 from __future__ import annotations
 

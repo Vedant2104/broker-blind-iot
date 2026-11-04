@@ -125,7 +125,7 @@ def render(emit: Emit, src: Path | None = None) -> list[Path]:
         ax.set_title("Time to detect a dropped smoke alarm")
         save(fig, "drop_detection.png")
 
-    # crypto timings per machine (laptop vs Raspberry Pi, when both were measured)
+    # crypto timings, one bar series per measured machine
     hosts = {f.stem.removeprefix("crypto-"): read_csv(f) for f in sorted(src.glob("crypto-*.csv"))}
     if hosts:
         ops = [r["op"] for r in next(iter(hosts.values()))]

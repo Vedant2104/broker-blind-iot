@@ -235,13 +235,9 @@ function DropChart({ rows }: { rows: Row[] }) {
   );
 }
 
-const isPi = (tag: string, rows: Row[]) =>
-  /aarch64|arm/i.test(tag) || /raspberry/i.test(rows[0]?.host ?? "");
-
 function CryptoTable({ crypto }: { crypto: Record<string, Row[]> }) {
   const hosts = Object.entries(crypto);
   const ops = hosts.length ? hosts[0][1].map((r) => r.op) : [];
-  const hasPi = hosts.some(([tag, rows]) => isPi(tag, rows));
   return (
     <Card className="xl:col-span-2">
       <CardHeader title="Crypto operation timings (median µs)" />
@@ -256,7 +252,6 @@ function CryptoTable({ crypto }: { crypto: Record<string, Row[]> }) {
                     {rows[0]?.host ?? tag}
                   </th>
                 ))}
-                {!hasPi && <th className="px-3 py-2 text-right">Raspberry Pi</th>}
               </tr>
             </thead>
             <tbody>
@@ -271,19 +266,12 @@ function CryptoTable({ crypto }: { crypto: Record<string, Row[]> }) {
                       </td>
                     );
                   })}
-                  {!hasPi && <td className="px-3 py-1.5 text-right text-muted">—</td>}
                 </tr>
               ))}
             </tbody>
           </table>
         ) : (
           <Empty text="No crypto timings yet." />
-        )}
-        {!hasPi && hosts.length > 0 && (
-          <p className="mt-2 text-[14px] text-muted">
-            Raspberry Pi not measured yet: on the Pi run <code className="text-accent">bbiot bench crypto</code>{" "}
-            (no broker needed) and copy its <code>crypto-aarch64.csv</code> into <code>bench/results/</code>.
-          </p>
         )}
       </div>
     </Card>
