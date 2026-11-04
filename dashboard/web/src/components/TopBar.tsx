@@ -1,6 +1,6 @@
 import { RotateCcw, ScrollText, ShieldOff, ShieldCheck } from "lucide-react";
 import { Badge, Button, cn } from "./ui";
-import type { LiveState } from "../live";
+import { fmtTime, type LiveState } from "../live";
 
 function Pill({ name, status }: { name: string; status?: string }) {
   const tone = status === "up" ? "ok" : status === "down" ? "bad" : "muted";
@@ -114,9 +114,23 @@ export function TopBar({
         {!live.connected && <Badge tone="bad">dashboard offline</Badge>}
       </div>
 
-      <Button variant="outline" className="ml-auto" onClick={onVerifyLog} disabled={!!busy} title="bbiot log verify">
-        <ScrollText className="h-4 w-4" /> Verify log
-      </Button>
+      <div className="ml-auto flex items-center gap-2">
+        {busy === "log.verify" ? (
+          <Badge tone="muted">verifying…</Badge>
+        ) : (
+          live.logCheck && (
+            <Badge
+              tone={live.logCheck.ok ? "ok" : "bad"}
+              title="Full output: Keys & Trust page, or the Terminal page (Attacker pane)"
+            >
+              {live.logCheck.ok ? "✓ log verified" : "✗ log problems"} · {fmtTime(live.logCheck.ts)}
+            </Badge>
+          )
+        )}
+        <Button variant="outline" onClick={onVerifyLog} disabled={!!busy} title="bbiot log verify">
+          <ScrollText className="h-4 w-4" /> Verify log
+        </Button>
+      </div>
       <Button variant="outline" onClick={onReset} disabled={!!busy}>
         <RotateCcw className="h-4 w-4" /> Reset demo
       </Button>

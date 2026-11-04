@@ -759,6 +759,14 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
             payload["ok"] = result
             if name == "log.verify":
                 live.log_check = {"ok": result, "ts": time.time()}
+                if result:
+                    live.alert(
+                        "info",
+                        "Transparency log verified ✓",
+                        reason="tree head signed, history consistent, every directory "
+                        "certificate included and matching its pin",
+                        command=command,
+                    )
             if not result:
                 live.alert("critical", f"'{command}' found problems", command=command)
         if isinstance(result, actions.AttackResult):

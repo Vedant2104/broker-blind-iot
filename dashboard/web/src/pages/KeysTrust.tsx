@@ -4,6 +4,8 @@ import { AlertTriangle, KeyRound, ScrollText, ShieldCheck } from "lucide-react";
 import { Badge, Button, Card, CardHeader, cn } from "../components/ui";
 import { Empty } from "../components/Feeds";
 import { fmtTime, type AdminAction, type LiveState, type TrustRow } from "../live";
+import { Term } from "../components/Term";
+import { latestRun } from "./AttackConsole";
 
 type Run = (name: string, params?: Record<string, unknown>) => Promise<unknown>;
 
@@ -131,9 +133,16 @@ function LogCard({ live, run, busy }: { live: LiveState; run: Run; busy: string 
             )}
           >
             {check.ok ? "✓" : "✗"} Last check {fmtTime(check.ts)}:{" "}
-            {check.ok ? "consistent, every entry included" : "problems found — see the terminal"}
+            {check.ok ? "consistent, every entry included" : "problems found — see below"}
           </div>
         )}
+        <div className="overflow-hidden rounded-lg border border-line">
+          <Term
+            lines={latestRun(live.console, "log.verify").map((l) => l.line)}
+            placeholder="$ bbiot log verify   # press Verify consistency"
+            className="h-56 bg-[#05070c] px-2 py-1"
+          />
+        </div>
       </div>
     </Card>
   );
