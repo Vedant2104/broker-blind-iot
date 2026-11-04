@@ -27,6 +27,9 @@ ROSTER_CONTEXT = b"bbiot-admin-roster-v1"
 ACTION_TYPES = ("add-device", "remove-device")
 ADMINS = ("A", "B", "C")
 THRESHOLD = 2
+# A pending add/remove action must be approved and issued within this time. Stale
+# actions (a forgotten request, a test run) can't be approved later by surprise.
+ACTION_TTL_MS = 60 * 60 * 1000
 DEVICE_ID = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
 RESERVED_IDS = {
     "root",
@@ -129,9 +132,21 @@ def valid_approvers(
     return sorted(set(ok))
 
 
+def is_expired(action: dict[str, Any], now_ms: int | None = None) -> bool:
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    return now_ms - int(action.get("created_ms", 0)) > ACTION_TTL_MS
+
+
+def check_fresh(action: dict[str, Any], now_ms: int | None = None) -> None:
+    if is_expired(action, now_ms):
+        minutes = ACTION_TTL_MS // 60_000
+        raise TrustError(f"action expired (older than {minutes} min) — start it again")
+
+
 def require_threshold(
     action: dict[str, Any], approvals: dict[str, str], roster: dict[str, Any]
 ) -> list[str]:
+    check_fresh(action)  # the root never acts on a stale approval
     approvers = valid_approvers(action, approvals, roster)
     need = int(roster["threshold"])
     if len(approvers) < need:

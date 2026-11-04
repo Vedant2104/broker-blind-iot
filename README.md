@@ -6,22 +6,54 @@ cannot read, forge, replay, redirect, or silently drop device messages. Each
 attack is shown live (security off vs. on), every action is a `bbiot` CLI
 command, and the overhead is measured.
 
-## Status
+![Architecture: devices, the untrusted broker and key directory, the operators](docs/architecture.svg)
 
-| Phase | What | State |
-|---|---|---|
-| 0 | Scaffold: layout, compose, Mosquitto mTLS, `bbiot` CLI skeleton, tests | ✅ done |
-| 1 | Baseline devices, evil-broker proxy, attacks 1–5 succeed, Live Home | ✅ done |
-| 2 | Offline root, device certs, 2-of-3 admins, directory, transparency log | ✅ done |
-| 3 | securelib AEAD + topic/seq/time/epoch binding, replay window | ✅ done (with 4) |
-| 4 | Centralized group keys (KDC), rekey on revoke, attack 6 | ✅ done (with 3) |
-| 5 | Decentralized group keys (MLS via OpenMLS sidecar), attacks 9–10 | ✅ done |
-| 6 | Hub, heartbeats, acks, MUD policy, quarantine, attacks 5/7/8 | ✅ done |
-| 7 | Full dashboard: Attack Console, Terminal, Keys & Trust, Pairing; `demo-tmux.sh` | ✅ done |
-| 8 | Benchmarks: per-message cost, crypto timings, groups 10/100/1000 KDC vs MLS, drop detection | ✅ done |
-| 9 | Polish | next |
+## Results at a glance
+
+Every attack runs with security **OFF** (TLS only) and **ON** (broker-blind), from the
+CLI or the dashboard, and each is covered by an integration test.
+
+| # | Attack | OFF (TLS only) | ON (broker-blind) |
+|---|---|---|---|
+| 1 | Broker reads payloads | ✗ reads everything | ✓ blocked — ciphertext only |
+| 2 | Broker changes a thermostat setpoint | ✗ 21 °C becomes 30 °C | ✓ blocked — tag invalid |
+| 3 | Broker replays "unlock front door" | ✗ door unlocks again | ✓ blocked — replay window |
+| 4 | Broker redirects the unlock to the back door | ✗ back door opens | ✓ blocked — wrong topic |
+| 5 | Broker silently drops the smoke alarm | ✗ nobody notices | ◐ detected in 3–6 s (can't be prevented) |
+| 6 | Broker MITMs the key exchange | ✗ unsigned DH: group key stolen | ✓ blocked — signature invalid |
+| 7 | Compromised thermostat listens to door commands | ✗ reads them | ✓ quarantined, group rekeyed, can't decrypt new traffic |
+| 8 | Counterfeit device joins | ✗ unlocks a door by bypassing the hub | ✓ refused at TLS, hub, devices and KDC |
+| 9 | Compromised directory swaps a public key | ✗ a naive client trusts it | ✓ caught by root signature / log / pin (cert or MLS key package) |
+| 10 | Compromised KDC vs. compromised directory | — | centralized: ✗ KDC reads everything · decentralized: ✓ nothing to read |
+
+Cost (laptop, `bench/results/`): about **+0.1 ms** and **+41 B** per state update
+(**+105 B** per signed command) on top of TLS; rekeying 1000 devices takes ~7 ms and
+1000 messages with the KDC, ~42 ms and one commit with MLS.
+
+## Quick start
+
+Requirements: Docker (with Compose v2), [uv](https://docs.astral.sh/uv/), Python 3.11+.
+
+```sh
+docker compose up -d --build     # everything: PKI ceremony, broker, devices, dashboard, ...
+uv sync --extra dev              # local Python env for the `bbiot` CLI
+uv run bbiot doctor              # pre-flight: every service and device ✓
+uv run bbiot demo start          # reset + security OFF + centralized: the demo's opening state
+```
+
+Then open <http://localhost:8000>. To present it, follow **[docs/DEMO.md](docs/DEMO.md)**
+(a 15-minute script: what to click, what to type, what the audience sees).
+
+## Project phases
+
+All ten phases of the spec are done: scaffold · baseline + attacks 1–5 · identity and
+PKI · message protection · centralized group keys · decentralized group keys (MLS) ·
+liveness and policy · full dashboard · benchmarks · polish (demo flow, demo script,
+architecture diagram, README).
 
 ## Architecture
+
+Ports and processes (diagram above for the trust boundaries):
 
 ```
  devices ──mTLS──> hub gateway :8883 ──mTLS──> evil-broker ──mTLS──> Mosquitto (stock)
@@ -152,27 +184,28 @@ kdc/         Key Distribution Center (centralized group keys)
 mls-sidecar/ Rust MLS sidecar on OpenMLS (decentralized group keys)
 dashboard/   FastAPI backend (app.py) + React frontend (web/)
 bench/       benchmarks (bench/*.py), results CSVs + charts (bench/results/)
-broker/      Mosquitto config (stock, mTLS only)
+broker/      Mosquitto configs: the home broker (stock, mTLS only), bench/ (benchmarks only)
 config/      home.yaml: the fixed device and topic list
 tests/       pytest suite
 secrets/     generated keys and certs (git-ignored)
 offline/     offline root + admin keys (git-ignored; mounted read-only only by the
              ceremony containers and the admin console)
 scripts/     demo-tmux.sh (terminal demo layout)
+docs/        DEMO.md (presenter script), architecture.svg / .png (diagram)
 ```
 
-## Quick start
+## Running it
 
-Requirements: Docker (with Compose v2), [uv](https://docs.astral.sh/uv/), Python 3.11+.
-Node 18+ only if you want to run the frontend dev server.
+Node 18+ is only needed for the frontend dev server.
 
 ```sh
 docker compose up -d --build     # TLS + offline PKI ceremony, broker, evil broker, directory,
-                                 # transparency log, 6 devices, dashboard; commissions 5
-uv sync --extra dev              # local Python env for the CLI
-uv run bbiot doctor              # ✓ mTLS round trip, ✓ no-cert client refused
+                                 # transparency log, devices, hub, KDC, admin console, dashboard
+uv run bbiot doctor              # pre-flight checklist (exit code 1 if not ready)
 uv run bbiot status              # every device's state
 uv run bbiot log verify          # STH ✓, consistency ✓, every directory cert included ✓
+uv run bbiot demo start          # reset to the demo's opening state (OFF, centralized)
+uv run bbiot demo reset          # clear attacks/quarantines, keep the current modes
 ```
 
 Dashboard: <http://localhost:8000>.
@@ -404,6 +437,22 @@ evil proxy in front of it) still sees plaintext. That is the "security OFF"
 baseline. With security ON, end-to-end protection (securelib) keeps the broker
 blind: it still sees topics, sizes, senders and sequence numbers (metadata), but
 cannot read, change, replay or redirect messages.
+
+## Limitations
+
+- **Drops can't be prevented**, only detected: a broker can always discard messages.
+  Detection takes a few seconds (sequence gaps, heartbeats every 5 s, 3 s ack timeout).
+- **Metadata is visible** to the broker: topics, sizes, sender ids, sequence numbers and
+  timing. Only payloads are protected.
+- **Centralized mode trusts the KDC** with every group key (attack 10); decentralized
+  (MLS) mode removes that, at a higher per-rekey cost.
+- **The offline root and admin keys are files** in `./offline`, standing in for real
+  offline storage / hardware tokens. The admin console holds them while it runs.
+  Admin approvals use simple 2-of-3 multi-signatures (no FROST).
+- **Simulated devices**: Python processes in containers, not real hardware. Crypto
+  timings come from the development laptop only; no Raspberry Pi or ESP32 was measured.
+- **Out of scope** (per the threat model): physical tampering, side channels, broker
+  denial of service, compromise of the offline root key.
 
 ### Starting over
 

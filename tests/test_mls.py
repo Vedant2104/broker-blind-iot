@@ -307,3 +307,33 @@ def test_benchmark_decentralized_ops() -> None:
     assert rows["rekey"]["messages"] == 1 and rows["revoke"]["messages"] == 1
     assert rows["join"]["messages"] == 2  # commit + welcome
     assert all(r["bytes"] > 0 and r["member_ms"] > 0 for r in rows.values())
+
+
+def test_directory_outage_during_commit_does_not_wedge_the_admin() -> None:
+    """The admin's commit is applied locally even if storing it in the directory fails
+    (it used to retry the same add forever: 'Duplicate signature key'); the commit is
+    still delivered over MQTT and uploaded to the directory once it is back."""
+    from securelib.services import ServiceError
+
+    h = Home.__new__(Home)
+    h.bus, h.dir = Bus(), FakeDirectory()
+    h.keys = {n: Ed25519PrivateKey.generate() for n in Home.NAMES}
+    h.trusted, h.alerts = set(Home.NAMES), []
+    real_put = h.dir.mls_put_handshake
+    down = {"on": True}
+
+    def flaky_put(msg: dict) -> None:
+        if down["on"]:
+            raise ServiceError("directory unreachable: read timed out")
+        real_put(msg)
+
+    h.dir.mls_put_handshake = flaky_put
+    h.g = {n: h._make(n) for n in Home.NAMES}
+    h.run(rounds=3)
+    keys = {n: h.g[n].current() for n in Home.NAMES}
+    assert None not in keys.values() and len(set(keys.values())) == 1  # converged via MQTT
+    assert not any("Duplicate" in a for a in h.alerts)
+    assert h.dir.handshakes == []  # nothing stored yet...
+    down["on"] = False
+    h.g["phone"].tick()
+    assert h.dir.handshakes  # ...queued commits uploaded once the directory is back

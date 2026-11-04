@@ -12,6 +12,7 @@ import typer
 
 from cli import actions, pki_actions, remote
 from cli import doctor as doctor_mod
+from rootca import approvals
 from securelib.config import Config, load_config
 from securelib.log import get_logger
 from securelib.pki import TrustError
@@ -130,18 +131,17 @@ def tls_init(
 def doctor(
     identity: str = typer.Option("cli", help="Client identity to connect as."),
 ) -> None:
-    """Check the broker: mTLS round trip works, and no-certificate clients are refused."""
+    """Pre-demo checklist: broker mTLS, every service, every device's cert and group key."""
     cfg = _cfg()
-    log.info(f"broker {cfg.broker_host}:{cfg.broker_port}")
-    checks = [
-        ("round trip with client cert", doctor_mod.roundtrip(cfg, identity)),
-        ("connect without client cert", doctor_mod.rejects_without_cert(cfg, identity)),
-    ]
-    for name, result in checks:
-        mark = "✓" if result.ok else "✗"
+    checks = doctor_mod.preflight(cfg, identity)
+    for name, result, required in checks:
+        mark = "✓" if result.ok else ("✗" if required else "!")
         log.info(f"{mark} {name}: {result.detail}")
-    if not all(r.ok for _, r in checks):
+    failed = [n for n, r, req in checks if req and not r.ok]
+    if failed:
+        log.info(f"✗ NOT ready: {len(failed)} problem(s) — {', '.join(failed)}")
         raise typer.Exit(code=1)
+    log.info("✓ ready for the demo")
 
 
 @app.command()
@@ -359,6 +359,8 @@ def admin_list() -> None:
     for e in entries:  # type: ignore[union-attr]
         a = e["action"]
         signed = ", ".join(sorted(e["approvals"])) or "-"
+        if e["status"] == "pending" and approvals.is_expired(a):
+            e["status"] = "expired"
         _emit(
             f"[admin] {e['id']}  {a['type']:<13} {a['device_id']:<14} {e['status']:<8} "
             f"approved by: {signed}"
@@ -535,6 +537,13 @@ def bench_charts() -> None:
 
 
 # --- demo / runners -----------------------------------------------------------------------
+
+
+@demo_app.command("start")
+def demo_start() -> None:
+    """Reset, then set the demo's opening state: security OFF, centralized keys."""
+    cfg = _cfg()
+    _run_remote(lambda: actions.demo_start(cfg, _emit))
 
 
 @demo_app.command("reset")

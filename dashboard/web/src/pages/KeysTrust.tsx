@@ -364,7 +364,7 @@ function ApprovalsCard({ live, run, busy }: { live: LiveState; run: Run; busy: s
                 </span>{" "}
                 <span className="font-mono text-[13px] text-muted">{a.id}</span>
               </div>
-              <Badge tone={a.status === "pending" ? "warn" : "ok"}>
+              <Badge tone={a.status === "pending" ? "warn" : a.status === "expired" ? "muted" : "ok"}>
                 {a.status === "pending" ? `${a.approvals.length}/${need} signatures` : a.status}
               </Badge>
             </div>

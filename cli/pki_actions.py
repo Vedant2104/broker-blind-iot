@@ -127,6 +127,7 @@ def approve(
     action = entry["action"]
     roster = load_roster(pki_paths(cfg))
     emit(f"[admin {admin}] reviewing {action_id}: {action['type']} {action['device_id']}")
+    approvals.check_fresh(action)  # don't sign something nobody can still use
     if action["type"] == "add-device":
         code = inspect_csr(entry["csr_pem"].encode(), action["device_id"])
         emit(f"[admin {admin}] device pairing code {code}")

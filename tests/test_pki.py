@@ -317,3 +317,18 @@ def test_second_cert_for_same_key_refused_until_revoked(
             pki_actions._refuse_second_cert(None, "garage-lock", device.fingerprint, "cli")
     # new keys (device reset) are not blocked by this check
     pki_actions._refuse_second_cert(None, "garage-lock", "00:11", "cli")
+
+
+def test_stale_action_cannot_be_issued(pki: PkiPaths, device: DeviceKeys) -> None:
+    """An add-device action left pending for over an hour can't be completed later."""
+    action = approvals.new_action("add-device", device.device_id, device.csr_pem)
+    action["created_ms"] -= approvals.ACTION_TTL_MS + 60_000
+    sigs = approve(pki, action, "A", "B")  # two valid signatures over the stale action
+    with pytest.raises(TrustError, match="expired"):
+        issue_device_cert(pki, action, device.csr_pem, sigs)
+
+
+def test_fresh_action_is_not_expired() -> None:
+    action = approvals.new_action("remove-device", "garage-lock")
+    assert not approvals.is_expired(action)
+    assert approvals.is_expired(action, now_ms=action["created_ms"] + approvals.ACTION_TTL_MS + 1)

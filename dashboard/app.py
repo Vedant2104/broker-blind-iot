@@ -163,6 +163,16 @@ class Live:
             "log_check": self.log_check,
         }
 
+    def clear_feeds(self) -> None:
+        """Reset demo: a clean screen (feeds, alerts, results, terminals, incidents)."""
+        for buf in (self.broker_feed, self.device_feed, self.alerts, self.console):
+            buf.clear()
+        self.results.clear()
+        self.incidents.clear()
+        self.log_check = None
+        for lines in self.logs.values():
+            lines.clear()
+
     def trust_payload(self) -> dict[str, Any]:
         return {**self.trust, "incidents": self.incidents}
 
@@ -354,7 +364,11 @@ def trust_view(
                 "id": e["id"],
                 "type": e["action"]["type"],
                 "device": e["action"]["device_id"],
-                "status": e["status"],
+                "status": (
+                    "expired"
+                    if e["status"] == "pending" and approvals.is_expired(e["action"])
+                    else e["status"]
+                ),
                 "approvals": sorted(e["approvals"]),
                 "created_ms": e["action"].get("created_ms"),
             }
@@ -765,6 +779,9 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
             raise HTTPException(422, f"unknown device {params.device!r}")
 
         run_id = uuid.uuid4().hex[:8]
+        if name == "demo.reset":
+            live.clear_feeds()
+            live.push(live.snapshot())
         mode_at_launch = live.security()
         keymode_at_launch = live.keymode()
         if isinstance(params, MitmParams) and params.unsigned is None:
@@ -833,9 +850,7 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
             )
         live.push_modes()
         if name == "demo.reset":
-            live.incidents.clear()
-            live.log_check = None
-            live.push({"type": "trust", "trust": live.trust_payload()})
+            live.push(live.snapshot())  # clean screen, plus the reset's own output
         live.push({"type": "action_done", **payload})
         return payload
 

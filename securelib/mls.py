@@ -142,6 +142,7 @@ class DecentralizedGroupKeys:
         self._kp_published_at = 0.0
         self._last_rejoin = 0.0
         self._used_kps: set[str] = set()  # admin: key packages already used (single-use)
+        self._unsent: list[dict] = []  # admin: handshakes the directory has not stored yet
         self._added_at: dict[str, float] = {}  # admin: when each device was last (re-)added
         self.last_commit_ms: float | None = None
 
@@ -371,6 +372,7 @@ class DecentralizedGroupKeys:
             self._tick()
 
     def _tick(self) -> None:
+        self._flush_unsent()
         if self._pending is not None:
             try:  # re-check a refused epoch once our trust view has caught up
                 self._install(self.mls.call("members"), "re-verified")
@@ -389,11 +391,26 @@ class DecentralizedGroupKeys:
             self.log.info(f"MLS: {type(exc).__name__}: {exc}")
 
     def _broadcast(self, kind: str, info: dict, data: str, to: list[str] | None = None) -> None:
+        """Send a commit/welcome to the members (MQTT) and store it in the directory so
+        members that missed it can catch up. The commit is already applied here, so a
+        directory outage must not lose it: it is queued and uploaded on a later tick."""
         msg = {"group_id": info["group_id"], "epoch": info["epoch"], "kind": kind, kind: data}
         if to is not None:
             msg["to"] = to
-        self.directory.mls_put_handshake(msg)
         self.publish(WELCOME_TOPIC if kind == "welcome" else COMMIT_TOPIC, msg)
+        self._unsent.append(msg)
+        self._flush_unsent()
+
+    def _flush_unsent(self) -> None:
+        while self._unsent:
+            try:
+                self.directory.mls_put_handshake(self._unsent[0])
+            except ServiceError as exc:
+                self.log.info(
+                    f"MLS: directory unavailable, {len(self._unsent)} handshake(s) queued ({exc})"
+                )
+                return
+            self._unsent.pop(0)
 
     def reconcile(self) -> None:
         with self._lock:
@@ -415,8 +432,9 @@ class DecentralizedGroupKeys:
         start = time.perf_counter()
         info = self.mls.call("remove", identities=devices)
         self.last_commit_ms = (time.perf_counter() - start) * 1000
-        self._broadcast("commit", info, info["commit"])
+        # the sidecar has merged the commit: record it before anything that can fail
         self._install(info, f"removed {', '.join(devices)}: {reason}")
+        self._broadcast("commit", info, info["commit"])
 
     def _add(self, devices: list[str]) -> None:
         kps, ok = [], []
@@ -448,6 +466,6 @@ class DecentralizedGroupKeys:
         now = time.monotonic()
         for dev in ok:
             self._added_at[dev] = now
+        self._install(info, f"added {', '.join(ok)}")
         self._broadcast("commit", info, info["commit"])
         self._broadcast("welcome", info, info["welcome"], to=ok)
-        self._install(info, f"added {', '.join(ok)}")

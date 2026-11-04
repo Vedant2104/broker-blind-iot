@@ -206,3 +206,15 @@ def test_bench_results_api(
     assert data["full"]["groups"][0]["op"] == "rekey"
     assert data["full"]["crypto"]["x86_64"][0]["median_us"] == "40"
     assert data["quick"]["groups"] == []
+
+
+def test_reset_demo_clears_the_screen(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(actions, "demo_reset", lambda cfg, emit: emit("[demo] reset"))
+    live = client.app.state.live
+    live.broker_feed.append({"topic": "home/x"})
+    live.alert("critical", "old alert")
+    live.results.append({"attack": "read"})
+    client.post("/api/actions/demo.reset")
+    snap = client.get("/api/snapshot").json()
+    assert snap["broker_feed"] == [] and snap["alerts"] == [] and snap["results"] == []
+    assert [c["line"] for c in snap["console"]] == ["$ bbiot demo reset", "[demo] reset"]

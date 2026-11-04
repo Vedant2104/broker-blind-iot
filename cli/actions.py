@@ -329,6 +329,16 @@ def demo_reset(cfg: Config, emit: Emit) -> None:
         emit(f"[demo] {device}: reset")
 
 
+def demo_start(cfg: Config, emit: Emit) -> None:
+    """The opening state of the demo script (docs/DEMO.md)."""
+    demo_reset(cfg, emit)
+    if keymode_now(cfg) != "centralized":
+        set_keymode(cfg, "centralized", emit)
+    if security_mode(cfg) != "off":
+        set_security(cfg, "off", emit)
+    emit("[demo] ready: security OFF (TLS only), centralized keys — start with attack 1")
+
+
 # --- security mode ------------------------------------------------------------------------
 
 
@@ -501,11 +511,18 @@ def attack_swap_key(
             _say(emit, f"{device} re-joins via the KDC; every device re-checks its certificate")
             remote.device_rejoin(cfg, device)
 
+        def about_the_swap(e: dict) -> bool:
+            # only alerts about the forged key/cert — not, say, a late alert left over
+            # from an earlier attack
+            text = f"{e.get('title', '')} {e.get('reason', '')}"
+            return device in text or "certificat" in text or "key package" in text
+
         def caught() -> list[dict]:
             return [
                 {**e, "device": d}
                 for d in cfg.devices
                 for e in _events_since(cfg, d, marks[d], "alert")
+                if about_the_swap(e)
             ]
 
         alerts = _wait_for(caught, timeout=20)

@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">
+  <title>Broker-Blind IoT — architecture</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <style>
+      .box { stroke-width: 2; rx: 10; }
+      .trusted { fill: #ecfdf5; stroke: #059669; }
+      .untrusted { fill: #fef2f2; stroke: #dc2626; }
+      .offline { fill: #f8fafc; stroke: #64748b; stroke-dasharray: 6 4; }
+      .tool { fill: #eff6ff; stroke: #2563eb; }
+      .zone { fill: none; stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 4 4; rx: 16; }
+      .h { font-weight: 700; font-size: 15px; fill: #0f172a; }
+      .s { font-size: 12.5px; fill: #334155; }
+      .t { font-size: 12px; fill: #475569; font-style: italic; }
+      .zl { font-size: 13px; font-weight: 700; fill: #64748b; letter-spacing: 0.06em; }
+      .line { stroke: #334155; stroke-width: 1.8; fill: none; }
+      .e2e { stroke: #059669; stroke-width: 3; fill: none; stroke-dasharray: 10 6; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="760" fill="#ffffff"/>
+  <text x="30" y="38" font-size="22" font-weight="800" fill="#0f172a">Broker-Blind IoT</text>
+  <text x="30" y="60" class="s">The broker and the key directory are untrusted: devices protect every message end to end and verify every key themselves.</text>
+
+  <!-- zones -->
+  <rect class="zone" x="20" y="85" width="300" height="485"/>
+  <text x="36" y="108" class="zl">HOME DEVICES (each its own container)</text>
+  <rect class="zone" x="345" y="85" width="520" height="250"/>
+  <text x="361" y="108" class="zl">MESSAGING PATH</text>
+  <rect class="zone" x="345" y="355" width="520" height="215"/>
+  <text x="361" y="378" class="zl">KEYS AND TRUST</text>
+  <rect class="zone" x="890" y="85" width="290" height="485"/>
+  <text x="906" y="108" class="zl">OPERATORS</text>
+
+  <!-- devices -->
+  <g>
+    <rect class="box trusted" x="40" y="125" width="260" height="410"/>
+    <text x="56" y="150" class="h">Devices + securelib</text>
+    <text x="56" y="172" class="s">front door · back door · garage lock</text>
+    <text x="56" y="190" class="s">thermostat · smoke sensor · phone app</text>
+    <line x1="56" y1="204" x2="284" y2="204" stroke="#a7f3d0"/>
+    <text x="56" y="226" class="s">• own Ed25519 + X25519 keys (never leave)</text>
+    <text x="56" y="246" class="s">• AEAD per message, AAD binds topic,</text>
+    <text x="68" y="263" class="s">sender, seq, timestamp, epoch</text>
+    <text x="56" y="283" class="s">• Ed25519 signature on commands/alarms</text>
+    <text x="56" y="303" class="s">• replay window, stale/epoch checks</text>
+    <text x="56" y="323" class="s">• verify peer certs: root ✓ log ✓ pin ✓</text>
+    <text x="56" y="343" class="s">• group key: KDC (centralized) or</text>
+    <text x="68" y="360" class="s">MLS TreeKEM (decentralized)</text>
+    <text x="56" y="380" class="s">• signed heartbeats + end-to-end acks</text>
+    <rect class="box trusted" x="56" y="400" width="228" height="120"/>
+    <text x="70" y="424" class="h">Hub (also a device)</text>
+    <text x="70" y="445" class="s">MQTT policy gateway: MUD profiles</text>
+    <text x="70" y="463" class="s">liveness: seq gaps, heartbeats, acks</text>
+    <text x="70" y="481" class="s">quarantine → revoke → rekey</text>
+    <text x="70" y="499" class="s">MLS group admin (commits)</text>
+  </g>
+
+  <!-- messaging path -->
+  <rect class="box untrusted" x="370" y="125" width="220" height="120"/>
+  <text x="386" y="150" class="h">Evil-broker proxy</text>
+  <text x="386" y="171" class="s">the malicious operator (MITM)</text>
+  <text x="386" y="190" class="s">read · modify · replay · redirect</text>
+  <text x="386" y="209" class="s">drop · MITM key exchange</text>
+  <text x="386" y="230" class="t">toggled from CLI / dashboard</text>
+
+  <rect class="box untrusted" x="625" y="125" width="220" height="120"/>
+  <text x="641" y="150" class="h">Mosquitto (stock)</text>
+  <text x="641" y="171" class="s">mTLS only, never modified</text>
+  <text x="641" y="190" class="s">sees topics, sizes, seq numbers</text>
+  <text x="641" y="209" class="s">— payloads are ciphertext</text>
+  <text x="641" y="230" class="t">`bbiot spy` shows what it sees</text>
+
+  <rect class="box trusted" x="370" y="265" width="475" height="52"/>
+  <text x="386" y="288" class="h">KDC (centralized mode only)</text>
+  <text x="386" y="306" class="s">signed X25519 exchange via the broker · rekeys on join/revoke · knows group keys</text>
+
+  <!-- keys and trust -->
+  <rect class="box untrusted" x="370" y="395" width="220" height="140"/>
+  <text x="386" y="420" class="h">Key directory</text>
+  <text x="386" y="441" class="s">device id → signed certificate</text>
+  <text x="386" y="460" class="s">MLS key packages, handshakes</text>
+  <text x="386" y="479" class="s">admin action board</text>
+  <text x="386" y="500" class="s">holds no private keys</text>
+  <text x="386" y="521" class="t">can lie — attack 9</text>
+
+  <rect class="box untrusted" x="625" y="395" width="220" height="140"/>
+  <text x="641" y="420" class="h">Transparency log</text>
+  <text x="641" y="441" class="s">append-only Merkle tree (RFC 6962)</text>
+  <text x="641" y="460" class="s">signed tree heads</text>
+  <text x="641" y="479" class="s">inclusion + consistency proofs</text>
+  <text x="641" y="500" class="s">every served cert must be in it</text>
+  <text x="641" y="521" class="t">`bbiot log verify`</text>
+
+  <!-- operators -->
+  <rect class="box tool" x="910" y="125" width="250" height="130"/>
+  <text x="926" y="150" class="h">Dashboard + `bbiot` CLI</text>
+  <text x="926" y="171" class="s">same code paths, fixed allowlist</text>
+  <text x="926" y="190" class="s">Live Home · Attack Console · Terminal</text>
+  <text x="926" y="209" class="s">Keys &amp; Trust · Pairing · Benchmarks</text>
+  <text x="926" y="230" class="s">localhost only; holds no keys</text>
+
+  <rect class="box offline" x="910" y="280" width="250" height="110"/>
+  <text x="926" y="305" class="h">Admin console</text>
+  <text x="926" y="326" class="s">admin keys A, B, C (read-only)</text>
+  <text x="926" y="345" class="s">mTLS: dashboard / cli callers only</text>
+  <text x="926" y="364" class="s">2 of 3 signatures per add/remove</text>
+  <text x="926" y="380" class="t">stop it = keys offline again</text>
+
+  <rect class="box offline" x="910" y="415" width="250" height="120"/>
+  <text x="926" y="440" class="h">Offline root CA</text>
+  <text x="926" y="461" class="s">Ed25519 root key in ./offline</text>
+  <text x="926" y="480" class="s">signs device certs and revocations</text>
+  <text x="926" y="499" class="s">only with 2 of 3 fresh approvals</text>
+  <text x="926" y="520" class="t">not part of the running system</text>
+
+  <!-- flows -->
+  <path class="e2e" d="M300 185 L366 185" marker-end="url(#arr-g)" marker-start="url(#arr-g)"/>
+  <text x="304" y="176" class="s">mTLS</text>
+  <text x="304" y="204" font-size="12" font-weight="700" fill="#059669">sealed</text>
+  <path class="line" d="M590 185 L625 185" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <path class="line" d="M480 245 L480 265" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <path class="line" d="M300 465 L370 465" marker-end="url(#arr)"/>
+  <text x="304" y="456" class="s">HTTPS</text>
+  <path class="line" d="M590 465 L625 465" marker-end="url(#arr)"/>
+  <text x="594" y="456" class="s">log</text>
+  <path class="line" d="M1035 390 L1035 415" marker-end="url(#arr)"/>
+  <path class="line" d="M1035 255 L1035 280" marker-end="url(#arr)"/>
+  <path class="line" d="M910 505 L878 505 L878 546 L480 546 L480 539" marker-end="url(#arr)"/>
+  <text x="560" y="562" class="s" fill="#475569">root publishes certificates + revocations</text>
+  <!-- legend -->
+  <g transform="translate(30, 590)">
+    <text x="0" y="0" class="zl">LEGEND</text>
+    <rect class="box trusted" x="0" y="14" width="26" height="18"/>
+    <text x="36" y="28" class="s">trusted (runs our code, holds its own keys)</text>
+    <rect class="box untrusted" x="330" y="14" width="26" height="18"/>
+    <text x="366" y="28" class="s">untrusted (may be compromised; can only deny service)</text>
+    <rect class="box offline" x="740" y="14" width="26" height="18"/>
+    <text x="776" y="28" class="s">offline keys (2-of-3 admins, root)</text>
+    <rect class="box tool" x="0" y="46" width="26" height="18"/>
+    <text x="36" y="60" class="s">operator tools</text>
+    <line x1="330" y1="55" x2="380" y2="55" class="e2e"/>
+    <text x="390" y="60" class="s">sealed end to end, device → device (AEAD + signatures; the broker only relays ciphertext)</text>
+  </g>
+
+  <g transform="translate(30, 680)">
+    <text x="0" y="0" class="zl">WHAT EACH ATTACKER GETS</text>
+    <text x="0" y="22" class="s">Broker: ciphertext + metadata only; forgeries, replays and redirects are rejected; drops are detected (seq gap / heartbeat / ack).</text>
+    <text x="0" y="42" class="s">Directory: can serve a fake key, but root signature, log inclusion and key pinning catch it. Compromised device: quarantined, removed, group rekeyed.</text>
+    <text x="0" y="62" class="s">Counterfeit device: no root-signed certificate — refused at TLS, hub, devices and KDC. One admin: needs a second admin's signature.</text>
+  </g>
+</svg>
