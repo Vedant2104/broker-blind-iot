@@ -146,3 +146,31 @@ def test_key_swap_incident_sticks_until_reset(
     assert reason in incidents[0]["detail"]
     client.post("/api/actions/demo.reset")
     assert client.get("/api/snapshot").json()["trust"]["incidents"] == []
+
+
+def test_spy_uses_the_running_identity(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dashboard container has only the 'dashboard' TLS identity, not 'cli'."""
+    used = []
+
+    def fake_client(cfg_, identity, **_k):
+        used.append(identity)
+        raise OSError("stop here")
+
+    monkeypatch.setattr(actions, "make_client", fake_client)
+    monkeypatch.setattr(actions, "IDENTITY", "cli")  # restored after the test
+    dash.create_app(cfg, start_background=False)  # sets actions.IDENTITY
+    with pytest.raises(OSError):
+        actions.Spy(cfg, "home/#", lambda t, p: None)
+    assert used == ["dashboard"]
+
+
+def test_unexpected_os_error_is_a_readable_502(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(cfg, emit):
+        raise FileNotFoundError("no such file: secrets/tls/identities/x/ca.crt")
+
+    monkeypatch.setattr(actions, "attack_read", broken)
+    r = client.post("/api/actions/attack.read")
+    assert r.status_code == 502
+    assert "no such file" in r.json()["detail"]

@@ -730,7 +730,7 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
 
         try:
             result = await run_in_threadpool(work)
-        except (remote.RemoteError, ServiceError, TrustError) as exc:
+        except (remote.RemoteError, ServiceError, TrustError, OSError) as exc:
             emit(f"✗ {exc}")
             live.push({"type": "action_done", "run": run_id, "action": name, "error": str(exc)})
             raise HTTPException(502, str(exc)) from exc

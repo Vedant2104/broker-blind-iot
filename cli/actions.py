@@ -111,9 +111,11 @@ class Spy:
         cfg: Config,
         topic_filter: str,
         on_message: Callable[[str, bytes], None],
-        identity: str = "cli",
+        identity: str | None = None,
     ):
-        self.client = make_client(cfg, identity)
+        # default: whoever is running the action ("cli" on the host, "dashboard" in its
+        # container — each container only has its own TLS identity)
+        self.client = make_client(cfg, identity or IDENTITY)
         self.topic_filter = topic_filter
         self.ready = threading.Event()
         self.client.on_connect = self._on_connect
