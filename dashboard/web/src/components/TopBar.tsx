@@ -107,6 +107,7 @@ export function TopBar({
           status={live.services["translog"]}
         />
         <Pill name="KDC" status={live.services["kdc"]} />
+        <Pill name="admin console" status={live.services["admin-console"]} />
         <Badge tone="accent" title="current group key epoch (KDC epoch, or MLS epoch)">
           {live.keymode === "decentralized" ? "MLS" : "KDC"} epoch {live.epoch ?? "—"}
         </Badge>

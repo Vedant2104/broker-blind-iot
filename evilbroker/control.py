@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from securelib.config import Config
+from securelib.log import TAIL
 
 if TYPE_CHECKING:
     from evilbroker.proxy import EvilBroker
@@ -58,6 +59,10 @@ def create_app(cfg: Config, broker: EvilBroker) -> FastAPI:
     @app.get("/status")
     def status() -> dict:
         return {"rules": broker.rules.as_dict(), "stats": dict(broker.stats)}
+
+    @app.get("/logs")
+    def logs(after: int = 0) -> list[dict]:
+        return TAIL.after(after)
 
     @app.put("/rules/drop")
     def arm_drop(body: TopicBody) -> dict:

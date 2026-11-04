@@ -38,6 +38,13 @@ kdc:
   host: localhost
   port: 8095
 
+# Admin console: the admins' signing station (offline admin + root keys, mounted
+# read-only). Mutual TLS; only the dashboard and cli identities may call it.
+# Stop its container and approvals from the dashboard stop too ("offline").
+admin_console:
+  host: localhost
+  port: 8096
+
 # Each device process exposes a small simulator control API on its port
 # (state, events, "send"). Localhost only; it is demo harness, not protocol.
 devices:

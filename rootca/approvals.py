@@ -38,6 +38,7 @@ RESERVED_IDS = {
     "evil-proxy",
     "kdc",
     "counterfeit",
+    "admin-console",
 }
 
 

@@ -25,7 +25,7 @@ from securelib.channel import Channel, NoGroupKey
 from securelib.config import Config, Device
 from securelib.groupkeys import CentralizedGroupKeys
 from securelib.identity import DeviceKeys
-from securelib.log import get_logger
+from securelib.log import TAIL, get_logger
 from securelib.message import peek_header
 from securelib.mqtt import make_client
 
@@ -454,6 +454,9 @@ class DeviceBase:
                     return self._json(200, device.events.after(after))
                 if url.path == "/identity":
                     return self._json(200, device.identity())
+                if url.path == "/logs":
+                    after = int(parse_qs(url.query).get("after", ["0"])[0] or 0)
+                    return self._json(200, TAIL.after(after))
                 return self._json(404, {"error": "not found"})
 
             def do_POST(self) -> None:

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from kdc.service import Kdc, log
 from securelib.config import Config
 from securelib.identity import read_private
+from securelib.log import TAIL
 from securelib.mqtt import make_client
 from securelib.trust import PeerVerifier
 from translog.run import wait_for
@@ -31,6 +32,10 @@ def create_app(cfg: Config, kdc: Kdc) -> FastAPI:
     @app.get("/status")
     def status() -> dict:
         return kdc.status()
+
+    @app.get("/logs")
+    def logs(after: int = 0) -> list[dict]:
+        return TAIL.after(after)
 
     @app.post("/rekey")
     def rekey() -> dict:

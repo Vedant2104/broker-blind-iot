@@ -276,3 +276,44 @@ def test_add_action_cannot_revoke(pki: PkiPaths, device: DeviceKeys) -> None:
     action = approvals.new_action("add-device", "garage-lock", device.csr_pem)
     with pytest.raises(TrustError, match="not remove-device"):
         issue_revocation(pki, action, approve(pki, action, "A", "B"), "01")
+
+
+# --- one live certificate per device key ------------------------------------------------------
+
+
+class _FakeDirectory:
+    def __init__(self, entry: dict | None) -> None:
+        self.entry = entry
+
+    def get_cert(self, device_id: str) -> dict | None:
+        return self.entry
+
+    def list_revocations(self) -> list[dict]:
+        return []
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_second_cert_for_same_key_refused_until_revoked(
+    pki: PkiPaths, device: DeviceKeys, monkeypatch: pytest.MonkeyPatch, revoked: bool
+) -> None:
+    """Re-pairing a commissioned device would leave a valid certificate behind that
+    survives revocation of the newer one: pairing must refuse until it is revoked."""
+    from cli import pki_actions
+
+    cert = issue(pki, device)
+    pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    entry = {"cert_pem": pem, "fingerprint": device.fingerprint, "leaf_index": 3}
+    monkeypatch.setattr(pki_actions, "directory", lambda cfg, identity: _FakeDirectory(entry))
+
+    class Anchors:
+        def revoked(self, _signed: list) -> dict[str, set[int]]:
+            return {"garage-lock": {cert.serial_number}} if revoked else {}
+
+    monkeypatch.setattr(pki_actions.TrustAnchors, "from_config", lambda cfg: Anchors())
+    if revoked:
+        pki_actions._refuse_second_cert(None, "garage-lock", device.fingerprint, "cli")
+    else:
+        with pytest.raises(TrustError, match="already commissioned"):
+            pki_actions._refuse_second_cert(None, "garage-lock", device.fingerprint, "cli")
+    # new keys (device reset) are not blocked by this check
+    pki_actions._refuse_second_cert(None, "garage-lock", "00:11", "cli")

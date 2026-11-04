@@ -17,8 +17,8 @@ command, and the overhead is measured.
 | 4 | Centralized group keys (KDC), rekey on revoke, attack 6 | ✅ done (with 3) |
 | 5 | Decentralized group keys (MLS via OpenMLS sidecar), attacks 9–10 | ✅ done |
 | 6 | Hub, heartbeats, acks, MUD policy, quarantine, attacks 5/7/8 | ✅ done |
-| 7 | Full dashboard | next |
-| 8 | Benchmarks | |
+| 7 | Full dashboard: Attack Console, Terminal, Keys & Trust, Pairing; `demo-tmux.sh` | ✅ done |
+| 8 | Benchmarks | next |
 | 9 | Polish | |
 
 ## Architecture
@@ -32,9 +32,10 @@ command, and the overhead is measured.
     └──MQTT (via the broker)──> KDC  (signed X25519 key exchange, group keys, rekeys)
                                 control API :8095
 
- offline/  root key + admin keys A/B/C — used only by the one-shot ceremony
-           containers (pki-init, commission) and the admin's host CLI
- dashboard :8000 — Mosquitto feed, device feed, trust status
+ offline/  root key + admin keys A/B/C — used by the one-shot ceremony containers
+           (pki-init, commission), the admin's host CLI, and the admin console
+ admin-console :8096 — the admins' signing station (mTLS, dashboard/cli only)
+ dashboard :8000 — Live Home, Attack Console, Terminal, Keys & Trust, Pairing
 ```
 
 - **evil-broker** is the malicious broker operator. It terminates client TLS with
@@ -145,7 +146,8 @@ evilbroker/  MQTT man-in-the-middle proxy that implements broker attacks
 hub/         policy gateway (MUD), liveness monitor, quarantine notices, hub device
 directory/   key directory (public certs only) + admin action board
 translog/    RFC 6962 Merkle tree (merkle.py) + log service
-rootca/      offline root CA (root.py) + 2-of-3 admin approvals (approvals.py)
+rootca/      offline root CA (root.py), 2-of-3 admin approvals (approvals.py),
+             admin console behind the dashboard's Approve buttons (console.py)
 kdc/         Key Distribution Center (centralized group keys)
 mls-sidecar/ Rust MLS sidecar on OpenMLS (decentralized group keys)
 dashboard/   FastAPI backend (app.py) + React frontend (web/)
@@ -154,7 +156,9 @@ broker/      Mosquitto config (stock, mTLS only)
 config/      home.yaml: the fixed device and topic list
 tests/       pytest suite
 secrets/     generated keys and certs (git-ignored)
-offline/     offline root + admin keys (git-ignored, never mounted into the system)
+offline/     offline root + admin keys (git-ignored; mounted read-only only by the
+             ceremony containers and the admin console)
+scripts/     demo-tmux.sh (terminal demo layout)
 ```
 
 ## Quick start
@@ -171,11 +175,48 @@ uv run bbiot status              # every device's state
 uv run bbiot log verify          # STH ✓, consistency ✓, every directory cert included ✓
 ```
 
-Dashboard: <http://localhost:8000> (Live Home).
+Dashboard: <http://localhost:8000>.
+
+| Page | What it shows |
+|---|---|
+| Live Home | device cards, "what the broker sees" vs. "what the devices received", alert timeline |
+| Attack Console | the 10 attacks: explanation, attacker type, Launch, an xterm.js panel with the exact `bbiot` command and its output, Copy; results matrix attack × (OFF/ON × Centralized/Decentralized) |
+| Terminal | the `demo-tmux.sh` layout, live: broker spy, attacker, any component's log, hub alerts |
+| Keys & Trust | directory entries verified like a device would (root, log inclusion, pin), signed tree head + Verify consistency, KDC members / MLS tree with the commit path, admin approvals with Approve A/B/C; red banner when the directory serves a bad key (stays until Reset demo) |
+| Pairing | device found → certificate request verified → QR code compared → 2 of 3 admins → joined group → rekey; a counterfeit device stops red at the certificate step |
+
+Every button runs the same code as a `bbiot` command and prints that command.
+The Terminal page reads each component's recent log lines from its control API
+(`/logs`), so it shows exactly what `docker compose logs` shows.
+
+### Terminal demo (tmux)
+
+```sh
+scripts/demo-tmux.sh          # Linux / macOS / WSL; BBIOT="uv run bbiot" by default
+```
+
+Panes: broker spy (`bbiot spy --topic 'home/#'`), attacker shell, front-door log,
+hub alerts, free shell.
+
+### Admin console (dashboard approvals)
+
+Admin keys and the root key never enter the dashboard. The **admin-console**
+container mounts `offline/` read-only and does one thing: approve a pending action
+as admin A, B or C (the same code as `bbiot admin approve`; at 2 of 3 the root
+issues the certificate). It serves mutual TLS and answers only the `dashboard` and
+`cli` client certificates — a compromised device with a valid transport cert gets
+`403`. The directory still checks every approval against the root-signed admin
+roster. `docker compose stop admin-console` takes the keys "offline" again: the
+dashboard's Approve buttons are disabled and the host CLI keeps working.
 
 ### Demo: pairing a new device (2 of 3 admins)
 
 `garage-lock` starts uncommissioned (badge "Unverified" with its pairing code).
+Same flow on the dashboard's Pairing page. A device that already has a live
+certificate for the same keys can't be paired again (`bbiot pair` refuses):
+revocations name a certificate serial, so a second certificate would survive
+revoking the first. Revoke it first (below, or the Revoke button on the Pairing
+page), then pair it again — it rejoins and the group rekeys.
 
 ```sh
 uv run bbiot pair --device garage-lock                  # verify CSR, compare codes, post action
@@ -279,6 +320,7 @@ rewritten to a Windows path.
 | 8444 | transparency log (HTTPS) |
 | 8101–8106 | device simulator APIs (front-door, back-door, thermostat, smoke-kitchen, phone, garage-lock) |
 | 8000 | dashboard |
+| 8096 | admin console (HTTPS, mutual TLS; dashboard / cli identities only) |
 
 ## Tests
 
@@ -314,6 +356,7 @@ cd dashboard/web && npm install && npm run dev    # http://127.0.0.1:5173, proxi
 | `BBIOT_TRANSLOG_HOST` / `_PORT` | from home.yaml | transparency log |
 | `BBIOT_OFFLINE_DIR` | `offline` | root + admin keys (admin machine only) |
 | `BBIOT_KDC_HOST` / `_PORT` | from home.yaml | KDC control API |
+| `BBIOT_ADMIN_CONSOLE_HOST` / `_PORT` | from home.yaml | admin console |
 | `BBIOT_SECURITY` | `on` | device default security mode (toggle persists per device) |
 | `BBIOT_AEAD` | `AES-GCM` | or `ChaCha20-Poly1305` |
 | `BBIOT_KEYMODE` | `centralized` | device default key mode (toggle persists per device) |
@@ -322,8 +365,10 @@ cd dashboard/web && npm install && npm run dev    # http://127.0.0.1:5173, proxi
 ## Dashboard security
 
 The backend only runs a fixed allowlist of actions (`dashboard/app.py: ACTIONS`)
-with validated parameters, each mapped to the same function the CLI uses. No
-shell execution, no free-text commands. Everything binds to localhost.
+with validated parameters (device names from home.yaml, admins A/B/C, 12-hex action
+ids), each mapped to the same function the CLI uses. No shell execution, no
+free-text commands; the xterm.js panels are read-only. Everything binds to
+localhost. The dashboard holds no admin or root keys (see Admin console).
 
 ## Transport TLS vs. end-to-end
 

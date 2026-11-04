@@ -32,6 +32,7 @@ SERVERS: dict[str, tuple[str, ...]] = {
     "directory": ("directory", "localhost"),
     "translog": ("translog", "localhost"),
     "hub": ("hub", "localhost"),  # the policy gateway every client connects to
+    "admin-console": ("admin-console", "localhost"),  # admins' signing station
 }
 VALIDITY_DAYS = 365
 

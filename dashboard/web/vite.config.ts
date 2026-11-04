@@ -5,6 +5,11 @@ import tailwindcss from "@tailwindcss/vite";
 // Dev server proxies the API and WebSocket to the FastAPI backend.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      output: { manualChunks: { xterm: ["@xterm/xterm", "@xterm/addon-fit"] } },
+    },
+  },
   server: {
     host: "127.0.0.1",
     proxy: {

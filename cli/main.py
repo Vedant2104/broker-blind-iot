@@ -584,6 +584,18 @@ def run_translog() -> None:
     serve(_cfg())
 
 
+@service_app.command("admin-console")
+def run_admin_console(
+    host: str = typer.Option(
+        os.environ.get("BBIOT_LISTEN", "127.0.0.1"), help="Bind address (keep localhost)."
+    ),
+) -> None:
+    """Run the admins' signing station the dashboard's Approve buttons call (mTLS)."""
+    from rootca.console import serve
+
+    serve(_cfg(), host)
+
+
 @dashboard_app.command("run")
 def dashboard_run(
     host: str = typer.Option("127.0.0.1", help="Bind address (keep localhost)."),

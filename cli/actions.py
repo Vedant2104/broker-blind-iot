@@ -453,8 +453,16 @@ def keymode_now(cfg: Config) -> str:
 # --- attack 9 -------------------------------------------------------------------------------------
 
 
-def attack_swap_key(cfg: Config, emit: Emit, device: str = "thermostat") -> AttackResult:
-    """9. Compromised directory substitutes a device's public key."""
+def attack_swap_key(
+    cfg: Config,
+    emit: Emit,
+    device: str = "thermostat",
+    on_swapped: Callable[[], None] | None = None,
+) -> AttackResult:
+    """9. Compromised directory substitutes a device's public key.
+
+    ``on_swapped`` runs while the forged entry is being served (the dashboard uses it
+    to verify the directory at that moment, like any other client would)."""
     from securelib.services import DirectoryClient
     from securelib.trust import TrustAnchors
 
@@ -466,6 +474,8 @@ def attack_swap_key(cfg: Config, emit: Emit, device: str = "thermostat") -> Atta
     _say(emit, f"directory compromised: serving the attacker's {what} for {device}")
     marks = {d: _mark(cfg, d) for d in cfg.devices}
     try:
+        if on_swapped is not None:
+            on_swapped()
         if security == "off":
             # A client that trusts the directory blindly (no root/log/pin checks).
             served = directory.get_cert(device)

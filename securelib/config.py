@@ -55,6 +55,8 @@ class Config:
     group_admin: str = "hub"
     evil_host: str = "localhost"
     evil_port: int = 8885
+    admin_console_host: str = "localhost"
+    admin_console_port: int = 8096
 
     @property
     def identities(self) -> list[str]:
@@ -101,6 +103,10 @@ class Config:
         return f"http://{self.kdc_host}:{self.kdc_port}"
 
     @property
+    def admin_console_url(self) -> str:
+        return f"https://{self.admin_console_host}:{self.admin_console_port}"
+
+    @property
     def proxy_url(self) -> str:
         return f"http://{self.proxy_host}:{self.proxy_port}"
 
@@ -130,6 +136,7 @@ def load_config(path: str | Path | None = None) -> Config:
     directory = raw.get("directory", {})
     translog = raw.get("translog", {})
     kdc = raw.get("kdc", {})
+    console = raw.get("admin_console", {})
     devices = {
         dev_id: Device(
             id=dev_id,
@@ -163,4 +170,6 @@ def load_config(path: str | Path | None = None) -> Config:
         group_admin=str(raw.get("group_admin", "hub")),
         evil_host=_env("BBIOT_EVIL_HOST", raw.get("evil_broker", {}).get("host", "localhost")),
         evil_port=int(_env("BBIOT_EVIL_PORT", raw.get("evil_broker", {}).get("port", 8885))),
+        admin_console_host=_env("BBIOT_ADMIN_CONSOLE_HOST", console.get("host", "localhost")),
+        admin_console_port=int(_env("BBIOT_ADMIN_CONSOLE_PORT", console.get("port", 8096))),
     )

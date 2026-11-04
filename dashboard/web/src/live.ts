@@ -33,7 +33,9 @@ export type TrustInfo = {
 };
 export type DeviceSnap = {
   id: string;
-  group?: { mode: string; epoch: number | null; session: boolean };
+  group?: { mode: string; epoch: number | null; session?: boolean; members?: string[] };
+  groups?: Record<string, { mode: string; epoch: number | null; members?: string[]; admin?: string }>;
+  keymode?: string;
   identity?: TrustInfo;
   kind?: string;
   label?: string;
@@ -47,10 +49,46 @@ export type AttackResult = {
   outcome: "SUCCEEDED" | "BLOCKED" | "DETECTED";
   reason: string;
   command: string;
+  details?: { stages?: string[]; [k: string]: unknown };
   security?: string;
   keymode?: string;
 };
-export type ConsoleLine = { run: string; action: string; line: string };
+export type ConsoleLine = { run: string; action: string; line: string; ts?: number };
+
+export type TrustRow = {
+  device: string;
+  fingerprint?: string;
+  leaf_index?: number;
+  status: "verified" | "revoked" | "key-changed" | "invalid";
+  pin?: string;
+  detail: string;
+};
+export type AdminAction = {
+  id: string;
+  type: "add-device" | "remove-device";
+  device: string;
+  status: string;
+  approvals: string[];
+  created_ms?: number;
+};
+export type TrustView = {
+  ts?: number;
+  directory?: TrustRow[];
+  sth?: { tree_size: number; root_hash: string; timestamp_ms: number } | null;
+  log_error?: string | null;
+  actions?: AdminAction[];
+  threshold?: number;
+  kdc?: {
+    epoch: number;
+    members: string[];
+    revoked: string[];
+    history: { epoch: number; reason: string; members: string[]; ms: number }[];
+  } | null;
+  mls?: { epoch: number | null; members: string[]; admin: string; group_id: string | null } | null;
+  console?: { admins: string[]; root: boolean } | null;
+  incidents?: { subject: string; detail: string; ts: number }[];
+};
+export type LogCheck = { ok: boolean; ts: number } | null;
 
 export type LiveState = {
   connected: boolean;
@@ -65,6 +103,9 @@ export type LiveState = {
   alerts: Alert[];
   results: AttackResult[];
   console: ConsoleLine[];
+  logs: Record<string, string[]>;
+  trust: TrustView;
+  logCheck: LogCheck;
 };
 
 const initial: LiveState = {
@@ -80,10 +121,14 @@ const initial: LiveState = {
   alerts: [],
   results: [],
   console: [],
+  logs: {},
+  trust: {},
+  logCheck: null,
 };
 
 const MAX = 150;
-const cap = <T,>(list: T[]) => (list.length > MAX ? list.slice(-MAX) : list);
+const cap = <T,>(list: T[], max = MAX) => (list.length > max ? list.slice(-max) : list);
+const LOG_MAX = 400;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Msg = { type: string; [k: string]: any };
@@ -108,6 +153,15 @@ function reducer(state: LiveState, msg: Msg): LiveState {
         deviceFeed: cap(msg.device_feed),
         alerts: cap(msg.alerts),
         results: msg.results,
+        console: cap(msg.console ?? [], 600),
+        logs: Object.fromEntries(
+          Object.entries((msg.logs ?? {}) as Record<string, { line: string }[]>).map(([k, v]) => [
+            k,
+            v.map((x) => x.line),
+          ]),
+        ),
+        trust: msg.trust ?? {},
+        logCheck: msg.log_check ?? null,
       };
     case "epoch":
       return { ...state, epoch: msg.epoch };
@@ -122,9 +176,25 @@ function reducer(state: LiveState, msg: Msg): LiveState {
     case "alert":
       return { ...state, alerts: cap([...state.alerts, msg.alert]) };
     case "console":
-      return { ...state, console: cap([...state.console, msg as unknown as ConsoleLine]) };
-    case "action_done":
-      return msg.result ? { ...state, results: [...state.results, msg.result] } : state;
+      return { ...state, console: cap([...state.console, msg as unknown as ConsoleLine], 600) };
+    case "logline": {
+      const prev = state.logs[msg.source] ?? [];
+      return {
+        ...state,
+        logs: { ...state.logs, [msg.source]: cap([...prev, ...(msg.lines as string[])], LOG_MAX) },
+      };
+    }
+    case "trust":
+      return { ...state, trust: msg.trust };
+    case "action_done": {
+      let next = state;
+      if (msg.result)
+        next = { ...next, results: [...next.results, msg.result] };
+      if (msg.action === "demo.reset") next = { ...next, logCheck: null };
+      if (msg.action === "log.verify" && typeof msg.ok === "boolean")
+        next = { ...next, logCheck: { ok: msg.ok, ts: Date.now() / 1000 } };
+      return next;
+    }
     default:
       return state;
   }
@@ -158,7 +228,15 @@ export function useLive(): LiveState {
   return state;
 }
 
-export type ActionResponse = { command: string; result?: AttackResult; error?: string };
+export type ActionResponse = {
+  command: string;
+  run?: string;
+  result?: AttackResult;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data?: any;
+  ok?: boolean;
+  error?: string;
+};
 
 export async function runAction(
   name: string,

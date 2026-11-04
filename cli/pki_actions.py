@@ -28,7 +28,7 @@ from rootca.root import (
 from securelib.config import Config
 from securelib.pki import TrustError, pairing_code, raw_public, read_x25519_extension
 from securelib.services import DirectoryClient, ServiceError
-from securelib.trust import KeyChanged, PeerVerifier
+from securelib.trust import KeyChanged, PeerVerifier, TrustAnchors
 
 CLI_IDENTITY = "cli"
 
@@ -37,8 +37,8 @@ def pki_paths(cfg: Config) -> PkiPaths:
     return PkiPaths(cfg.offline_dir, cfg.pki_public_dir, cfg.translog_key_path)
 
 
-def directory(cfg: Config) -> DirectoryClient:
-    return DirectoryClient.connect(cfg, CLI_IDENTITY)
+def directory(cfg: Config, identity: str = CLI_IDENTITY) -> DirectoryClient:
+    return DirectoryClient.connect(cfg, identity)
 
 
 # --- setup ---------------------------------------------------------------------------------
@@ -72,7 +72,7 @@ def inspect_csr(csr_pem: bytes, device_id: str) -> str:
     return pairing_code(raw_public(pub), raw_public(read_x25519_extension(csr.extensions)))
 
 
-def pair(cfg: Config, device: str, emit: Emit) -> str:
+def pair(cfg: Config, device: str, emit: Emit, *, identity: str = CLI_IDENTITY) -> str:
     """Steps 1-3 of pairing: find the device, verify its request, show the code
     to compare, post the add-device action for admin approval."""
     emit(f"[pair] ① device found: {device} (local pairing channel)")
@@ -85,17 +85,42 @@ def pair(cfg: Config, device: str, emit: Emit) -> str:
     if code != info["pairing_code"]:
         raise TrustError("pairing codes DIFFER — the request was swapped in transit; aborting")
     emit("[pair]    ✓ codes match (in real life: compare with the QR code on the device)")
+    _refuse_second_cert(cfg, device, info["fingerprint"], identity)
 
     action = approvals.new_action("add-device", device, csr_pem)
-    posted = directory(cfg).post_action(action, csr_pem.decode())
+    posted = directory(cfg, identity).post_action(action, csr_pem.decode())
     aid = posted["id"]
     emit(f"[pair] ④ action {aid}: add-device {device} — needs 2 of 3 admin approvals")
     emit(f"[pair]    next: bbiot admin approve --admin A --action {aid}")
     return aid
 
 
-def approve(cfg: Config, admin: str, action_id: str, emit: Emit, *, auto_issue: bool = True):
-    d = directory(cfg)
+def _refuse_second_cert(cfg: Config, device: str, fingerprint: str, identity: str) -> None:
+    """One live certificate per device key. A second one would survive revocation of the
+    first (revocations are by serial), so a commissioned device must be revoked first."""
+    current = directory(cfg, identity).get_cert(device)
+    if current is None or current.get("fingerprint") != fingerprint:
+        return
+    serial = x509.load_pem_x509_certificate(current["cert_pem"].encode()).serial_number
+    anchors = TrustAnchors.from_config(cfg)
+    revoked = anchors.revoked(directory(cfg, identity).list_revocations())
+    if serial not in revoked.get(device, set()):
+        raise TrustError(
+            f"{device} is already commissioned with these keys (log leaf "
+            f"#{current.get('leaf_index')}); revoke it first: bbiot revoke --device {device}"
+        )
+
+
+def approve(
+    cfg: Config,
+    admin: str,
+    action_id: str,
+    emit: Emit,
+    *,
+    auto_issue: bool = True,
+    identity: str = CLI_IDENTITY,
+):
+    d = directory(cfg, identity)
     entry = d.get_action(action_id)
     if entry is None:
         raise ServiceError(f"no pending action {action_id}")
@@ -111,7 +136,7 @@ def approve(cfg: Config, admin: str, action_id: str, emit: Emit, *, auto_issue: 
     need = roster["threshold"]
     emit(f"[admin {admin}] ✓ signed — approvals {len(approvers)}/{need} ({', '.join(approvers)})")
     if len(approvers) >= need and updated["status"] == "pending" and auto_issue:
-        return issue(cfg, action_id, emit)
+        return issue(cfg, action_id, emit, identity=identity)
     if len(approvers) < need:
         others = [a for a in approvals.ADMINS if a not in approvers]
         emit(
@@ -121,25 +146,27 @@ def approve(cfg: Config, admin: str, action_id: str, emit: Emit, *, auto_issue: 
     return updated
 
 
-def revoke(cfg: Config, device: str, emit: Emit) -> str:
+def revoke(cfg: Config, device: str, emit: Emit, *, identity: str = CLI_IDENTITY) -> str:
     """Post a remove-device action; at 2 of 3 approvals the root signs the revocation,
     the KDC drops the device and rekeys."""
-    if directory(cfg).get_cert(device) is None:
+    if directory(cfg, identity).get_cert(device) is None:
         raise ServiceError(f"{device} has no certificate to revoke")
     action = approvals.new_action("remove-device", device)
-    aid = directory(cfg).post_action(action, None)["id"]
+    aid = directory(cfg, identity).post_action(action, None)["id"]
     emit(f"[revoke] action {aid}: remove-device {device} — needs 2 of 3 admin approvals")
     emit(f"[revoke]    next: bbiot admin approve --admin A --action {aid}")
     return aid
 
 
-def issue(cfg: Config, action_id: str, emit: Emit) -> dict[str, Any]:
-    d = directory(cfg)
+def issue(
+    cfg: Config, action_id: str, emit: Emit, *, identity: str = CLI_IDENTITY
+) -> dict[str, Any]:
+    d = directory(cfg, identity)
     entry = d.get_action(action_id)
     if entry is None:
         raise ServiceError(f"no action {action_id}")
     if entry["action"]["type"] == "remove-device":
-        return _issue_revocation(cfg, entry, emit)
+        return _issue_revocation(cfg, entry, emit, identity)
     pem, approvers = issue_device_cert(
         pki_paths(cfg), entry["action"], entry["csr_pem"].encode(), entry["approvals"]
     )
@@ -159,8 +186,8 @@ def issue(cfg: Config, action_id: str, emit: Emit) -> dict[str, Any]:
     return published
 
 
-def _issue_revocation(cfg: Config, entry: dict, emit: Emit) -> dict[str, Any]:
-    d = directory(cfg)
+def _issue_revocation(cfg: Config, entry: dict, emit: Emit, identity: str) -> dict[str, Any]:
+    d = directory(cfg, identity)
     device = entry["action"]["device_id"]
     current = d.get_cert(device)
     if current is None:

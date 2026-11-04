@@ -164,3 +164,18 @@ def device_compromise(cfg: Config, device: str, topics: list[str]) -> dict:
 def device_try_decrypt(cfg: Config, device: str, topic: str, payload_hex: str) -> dict:
     body = {"topic": topic, "payload": payload_hex}
     return _call("POST", f"{cfg.device_url(device)}/try-decrypt", json=body)
+
+
+# --- log tails (Terminal page) ------------------------------------------------------------
+
+
+def device_logs(cfg: Config, device: str, after: int = 0) -> list[dict]:
+    return _call("GET", f"{cfg.device_url(device)}/logs", params={"after": after})
+
+
+def proxy_logs(cfg: Config, after: int = 0) -> list[dict]:
+    return _call("GET", f"{cfg.proxy_url}/logs", params={"after": after})
+
+
+def kdc_logs(cfg: Config, after: int = 0) -> list[dict]:
+    return _call("GET", f"{cfg.kdc_url}/logs", params={"after": after})

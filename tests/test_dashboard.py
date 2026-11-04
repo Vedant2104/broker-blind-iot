@@ -32,10 +32,8 @@ def test_bad_params_422(client: TestClient, setpoint) -> None:
 
 
 def test_allowlist_is_fixed() -> None:
-    assert all(
-        name.split(".")[0] in {"phone", "attack", "demo", "log", "security", "keymode"}
-        for name in dash.ACTIONS
-    )
+    groups = {"phone", "attack", "demo", "log", "security", "keymode", "pair", "admin"}
+    assert all(name.split(".")[0] in groups for name in dash.ACTIONS)
 
 
 def test_action_runs_shared_code_and_reports_command(
@@ -63,3 +61,88 @@ def test_action_runs_shared_code_and_reports_command(
 def test_websocket_sends_snapshot_first(client: TestClient) -> None:
     with client.websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "snapshot"
+
+
+def test_console_history_in_snapshot(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(actions, "attack_read", lambda cfg, emit: emit("[attacker] hi") or None)
+    client.post("/api/actions/attack.read")
+    lines = [c["line"] for c in client.get("/api/snapshot").json()["console"]]
+    assert lines == ["$ bbiot attack read", "[attacker] hi"]
+
+
+def test_pair_only_known_devices(client: TestClient) -> None:
+    assert client.post("/api/actions/pair.start", json={"device": "toaster"}).status_code == 422
+    r = client.post("/api/actions/pair.start", json={"device": "garage-lock; rm -rf /"})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"admin": "D", "action": "0123456789ab"},
+        {"admin": "A", "action": "0123456789abcd"},
+        {"admin": "A", "action": "$(id)"},
+        {"admin": "A"},
+    ],
+)
+def test_approve_params_validated(client: TestClient, body: dict) -> None:
+    assert client.post("/api/actions/admin.approve", json=body).status_code == 422
+
+
+def test_approve_goes_through_admin_console(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dashboard holds no admin keys: approvals are signed by the admin console."""
+    calls = []
+
+    class FakeConsole:
+        def __init__(self, cfg, identity):
+            calls.append(identity)
+
+        def approve(self, admin, action):
+            calls.append((admin, action))
+            return {"lines": [f"[admin {admin}] ✓ signed — approvals 2/2 (A, B)"], "issued": True}
+
+    monkeypatch.setattr(dash, "ConsoleClient", FakeConsole)
+    r = client.post("/api/actions/admin.approve", json={"admin": "B", "action": "0123456789ab"})
+    assert r.status_code == 200
+    assert r.json()["command"] == "bbiot admin approve --admin B --action 0123456789ab"
+    assert r.json()["data"]["issued"] is True
+    assert calls == ["dashboard", ("B", "0123456789ab")]
+
+
+def test_console_unreachable_is_reported(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Down:
+        def __init__(self, cfg, identity):
+            pass
+
+        def approve(self, admin, action):
+            raise dash.ServiceError("admin console unreachable (offline?)")
+
+    monkeypatch.setattr(dash, "ConsoleClient", Down)
+    r = client.post("/api/actions/admin.approve", json={"admin": "A", "action": "0123456789ab"})
+    assert r.status_code == 502
+    assert "offline" in r.json()["detail"]
+
+
+def test_key_swap_incident_sticks_until_reset(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attack 9's forged key is served only briefly; the mismatch must stay visible."""
+    reason = "caught by hub: certificate signature does not verify against the root"
+    monkeypatch.setattr(
+        actions,
+        "attack_swap_key",
+        lambda cfg, emit, device, on_swapped=None: actions.AttackResult(
+            "swap-key", "BLOCKED", reason, "x"
+        ),
+    )
+    monkeypatch.setattr(actions, "demo_reset", lambda cfg, emit: None)
+    client.post("/api/actions/attack.swap_key")
+    incidents = client.get("/api/snapshot").json()["trust"]["incidents"]
+    assert [i["subject"] for i in incidents] == ["thermostat"]
+    assert reason in incidents[0]["detail"]
+    client.post("/api/actions/demo.reset")
+    assert client.get("/api/snapshot").json()["trust"]["incidents"] == []

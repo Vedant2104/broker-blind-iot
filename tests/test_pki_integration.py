@@ -42,9 +42,14 @@ def test_directory_serves_each_device_its_own_keys(cfg) -> None:
 
 
 def test_single_admin_cannot_get_a_cert_issued(cfg) -> None:
+    from rootca import approvals
     from securelib.pki import TrustError
 
-    aid = pki_actions.pair(cfg, "garage-lock", lambda _l: None)
+    # post the add-device action directly: garage-lock is already commissioned, so
+    # `pair` would (rightly) refuse to start a second certificate for the same key
+    csr = remote.device_identity(cfg, "garage-lock")["csr_pem"]
+    action = approvals.new_action("add-device", "garage-lock", csr.encode())
+    aid = pki_actions.directory(cfg).post_action(action, csr)["id"]
     pki_actions.approve(cfg, "B", aid, lambda _l: None, auto_issue=False)
     with pytest.raises(TrustError, match="needs 2 admin approvals"):
         pki_actions.issue(cfg, aid, lambda _l: None)

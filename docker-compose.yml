@@ -6,8 +6,9 @@
 #   devices ──HTTPS─> directory :8443 ──HTTPS──> translog :8444
 #
 # Secrets layout and who mounts what:
-#   ./offline/                       root + admin keys: ONLY pki-init and commission (one-shot
-#                                    "offline ceremony" containers) — never the running system
+#   ./offline/                       root + admin keys: pki-init and commission (one-shot
+#                                    "offline ceremony" containers) and admin-console (the
+#                                    admins' signing station; read-only, mTLS, dashboard-only)
 #   ./secrets/pki/public/            root cert, signed admin roster, log cert (read-only, everyone)
 #   ./secrets/tls/identities/<name>/ each container gets only its own transport TLS identity
 #   ./secrets/devices/<id>/          each device's own identity keys (only that device)
@@ -26,6 +27,7 @@ x-env: &env
   BBIOT_DIRECTORY_HOST: directory
   BBIOT_TRANSLOG_HOST: translog
   BBIOT_KDC_HOST: kdc
+  BBIOT_ADMIN_CONSOLE_HOST: admin-console
   BBIOT_DEVICE_HOST: service
   BBIOT_CONTROL_BIND: 0.0.0.0
 
@@ -253,6 +255,25 @@ services:
       - ./secrets/pki/public:/app/secrets/pki/public:ro
       - ./secrets/tls/identities/garage-lock:/app/secrets/tls/identities/garage-lock:ro
       - ./secrets/devices/garage-lock:/app/secrets/devices/garage-lock
+
+  # The admins' signing station behind the dashboard's Approve buttons. Holds the
+  # offline keys (read-only); serves mutual TLS and answers only the dashboard and
+  # cli identities. `docker compose stop admin-console` takes the keys offline again.
+  admin-console:
+    image: bbiot:dev
+    restart: unless-stopped
+    command: ["run", "admin-console"]
+    depends_on:
+      directory: {condition: service_started}
+    environment:
+      <<: *env
+      BBIOT_LISTEN: 0.0.0.0
+      BBIOT_OFFLINE_DIR: /app/offline
+    ports: ["127.0.0.1:8096:8096"]
+    volumes:
+      - ./offline:/app/offline:ro
+      - ./secrets/pki/public:/app/secrets/pki/public:ro
+      - ./secrets/tls/identities/admin-console:/app/secrets/tls/identities/admin-console:ro
 
   # --- dashboard + tools ------------------------------------------------------------------------
 
