@@ -1,0 +1,16 @@
+host,machine,python,cryptography,op,n,median_us,p95_us
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,Ed25519 sign (64 B),5000,28.749,42.102
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,Ed25519 verify (64 B),5000,91.954,119.786
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,X25519 key agreement,5000,27.916,36.187
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,X25519 keygen + agreement,5000,56.695,79.907
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,HKDF-SHA256 (32 B),5000,3.454,6.577
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,AES-256-GCM encrypt (64 B),5000,0.757,1.041
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,AES-256-GCM decrypt (64 B),5000,0.72,0.786
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,ChaCha20-Poly1305 encrypt (64 B),5000,0.871,1.315
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,ChaCha20-Poly1305 decrypt (64 B),5000,0.833,1.552
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,seal state message (AEAD),5000,8.517,14.857
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,seal command (AEAD + Ed25519),5000,38.572,71.296
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,KDC key wrap (per member),5000,3.388,6.018
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,KDC signed join handshake (both sides),500,436.2465,606.174
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,open state message (all checks),5000,19.3529,
+Laptop x86_64 (Docker),x86_64,3.12.16,50.0.2,open command (+ verify),5000,128.7633,

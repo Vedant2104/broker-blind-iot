@@ -9,14 +9,15 @@ import { AttackConsole } from "./pages/AttackConsole";
 import { TerminalPage } from "./pages/TerminalPage";
 import { KeysTrust } from "./pages/KeysTrust";
 import { Pairing, type PairFlow } from "./pages/Pairing";
+import { Benchmarks } from "./pages/Benchmarks";
 
-const PAGES = [
+const PAGES: { id: string; name: string; phase?: number }[] = [
   { id: "home", name: "Live Home" },
   { id: "attacks", name: "Attack Console" },
   { id: "terminal", name: "Terminal" },
   { id: "keys", name: "Keys & Trust" },
   { id: "pairing", name: "Pairing" },
-  { id: "bench", name: "Benchmarks", phase: 8 },
+  { id: "bench", name: "Benchmarks" },
 ];
 
 const ORDER = ["hub", "phone", "front-door", "back-door", "thermostat", "smoke-kitchen", "garage-lock"];
@@ -111,6 +112,7 @@ export default function App() {
         {page === "attacks" && <AttackConsole live={live} run={run} busy={busy} />}
         {page === "terminal" && <TerminalPage live={live} />}
         {page === "keys" && <KeysTrust live={live} run={run} busy={busy} />}
+        {page === "bench" && <Benchmarks live={live} run={run} busy={busy} />}
         {page === "pairing" && (
           <Pairing live={live} run={run} busy={busy} flow={pairFlow} setFlow={setPairFlow} />
         )}

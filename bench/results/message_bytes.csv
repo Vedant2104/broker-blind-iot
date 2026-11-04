@@ -1,0 +1,7 @@
+kind,mode,payload_bytes,mqtt_packet_bytes,wire_bytes,added_vs_plain,tls
+state,plain,79,113,113,0,none
+state,tls,79,113,135,22,TLSv1.3 TLS_AES_256_GCM_SHA384
+state,ours,97,132,154,41,TLSv1.3 TLS_AES_256_GCM_SHA384
+command,plain,72,104,104,0,none
+command,tls,72,104,126,22,TLSv1.3 TLS_AES_256_GCM_SHA384
+command,ours,154,187,209,105,TLSv1.3 TLS_AES_256_GCM_SHA384

@@ -6,8 +6,11 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
+    chunkSizeWarningLimit: 600, // recharts is ~550 kB on its own
     rollupOptions: {
-      output: { manualChunks: { xterm: ["@xterm/xterm", "@xterm/addon-fit"] } },
+      output: {
+        manualChunks: { xterm: ["@xterm/xterm", "@xterm/addon-fit"], charts: ["recharts"] },
+      },
     },
   },
   server: {

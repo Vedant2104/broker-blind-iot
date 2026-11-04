@@ -1,0 +1,3 @@
+# Anonymous clients (plain listener) and every authenticated client: bench/ only.
+topic readwrite bench/#
+pattern readwrite bench/#

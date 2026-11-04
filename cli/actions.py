@@ -308,7 +308,8 @@ def attack_drop(cfg: Config, emit: Emit, topic: str, wait: float = 4.0) -> Attac
             how = f" via {first['check']}" if first.get("check") else ""
             when = f" ({ttd:g}s after it was sent)" if isinstance(ttd, int | float) else ""
             reason = f"broker dropped it, but the hub detected it{how}{when}: {first['title']}"
-            return AttackResult("drop", DETECTED, reason, command, {"alerts": len(alerts)})
+            details = {"alerts": len(alerts), "detect_s": ttd, "check": first.get("check")}
+            return AttackResult("drop", DETECTED, reason, command, details)
     reason = (
         f"{source.label} published on {topic}, phone never got it and nobody was alerted "
         f"(waited {wait:g}s)"

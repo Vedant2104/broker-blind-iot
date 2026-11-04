@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
+import json
 import os
 import ssl
 import threading
@@ -544,6 +546,37 @@ def _approve(cfg: Config, admin: str, action_id: str, emit: actions.Emit) -> dic
     return {"action_id": action_id, "admin": admin, "issued": result["issued"]}
 
 
+def _bench_quick(cfg: Config, emit: actions.Emit) -> dict[str, Any]:
+    from bench.run import QUICK, run
+
+    return run(cfg, emit, QUICK, identity=IDENTITY)
+
+
+def bench_results() -> dict[str, Any]:
+    """The benchmark CSVs as JSON rows: the full run (bench/results) and the latest
+    quick run (bench/results/quick). Numbers only; nothing secret is measured."""
+    from bench.common import read_csv, results_dir
+
+    def load(path: Path) -> dict[str, Any]:
+        meta = {}
+        with contextlib.suppress(OSError, ValueError):
+            meta = json.loads((path / "run.json").read_text("utf-8"))
+        return {
+            "meta": meta,
+            "bytes": read_csv(path / "message_bytes.csv"),
+            "latency": read_csv(path / "message_latency.csv"),
+            "groups": read_csv(path / "groups.csv"),
+            "drop": read_csv(path / "drop_detection.csv"),
+            "crypto": {
+                f.stem.removeprefix("crypto-"): read_csv(f)
+                for f in sorted(path.glob("crypto-*.csv"))
+            },
+        }
+
+    base = results_dir()
+    return {"full": load(base), "quick": load(base / "quick")}
+
+
 def _log_verify(cfg: Config, emit: actions.Emit) -> bool:
     with TRUST_LOCK:
         return pki_actions.log_verify(cfg, emit, identity=IDENTITY)
@@ -641,6 +674,11 @@ ACTIONS: dict[str, ActionSpec] = {
         lambda p: "bbiot attack kdc-vs-directory",
         lambda cfg, p, emit: actions.attack_kdc_vs_directory(cfg, emit),
     ),
+    "bench.quick": ActionSpec(
+        NoParams,
+        lambda p: "bbiot bench quick",
+        lambda cfg, p, emit: _bench_quick(cfg, emit),
+    ),
     "keymode.centralized": ActionSpec(
         NoParams,
         lambda p: "bbiot keymode centralized",
@@ -705,6 +743,10 @@ def create_app(cfg: Config, *, start_background: bool = True) -> FastAPI:
     @app.get("/api/snapshot")
     def snapshot() -> dict:
         return live.snapshot()
+
+    @app.get("/api/bench")
+    def bench() -> dict:
+        return bench_results()
 
     @app.get("/api/actions")
     def list_actions() -> list[str]:

@@ -18,8 +18,9 @@ dist/
 # Node
 node_modules/
 
-# Benchmark scratch output
+# Benchmark scratch output (bench/results holds the committed full run)
 bench/out/
+bench/results/quick/
 
 # OS / editor
 .DS_Store

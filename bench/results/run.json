@@ -1,0 +1,27 @@
+{
+ "profile": {
+  "name": "full",
+  "crypto_n": 5000,
+  "messages_n": 300,
+  "sizes": [
+   10,
+   100,
+   1000
+  ],
+  "reps": 5,
+  "drop_runs": 5
+ },
+ "host": "Laptop x86_64 (Docker)",
+ "machine": "x86_64",
+ "python": "3.12.16",
+ "cryptography": "50.0.2",
+ "started": 1793797638.5532956,
+ "seconds": 48.3,
+ "steps": {
+  "crypto": "ok",
+  "messages": "ok",
+  "groups": "ok",
+  "drop": "ok",
+  "charts": "ok"
+ }
+}

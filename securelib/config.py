@@ -57,6 +57,9 @@ class Config:
     evil_port: int = 8885
     admin_console_host: str = "localhost"
     admin_console_port: int = 8096
+    bench_host: str = "localhost"  # benchmark-only Mosquitto (plain + mTLS listeners)
+    bench_plain_port: int = 1885
+    bench_tls_port: int = 8887
 
     @property
     def identities(self) -> list[str]:
@@ -137,6 +140,7 @@ def load_config(path: str | Path | None = None) -> Config:
     translog = raw.get("translog", {})
     kdc = raw.get("kdc", {})
     console = raw.get("admin_console", {})
+    bench = raw.get("bench_broker", {})
     devices = {
         dev_id: Device(
             id=dev_id,
@@ -172,4 +176,7 @@ def load_config(path: str | Path | None = None) -> Config:
         evil_port=int(_env("BBIOT_EVIL_PORT", raw.get("evil_broker", {}).get("port", 8885))),
         admin_console_host=_env("BBIOT_ADMIN_CONSOLE_HOST", console.get("host", "localhost")),
         admin_console_port=int(_env("BBIOT_ADMIN_CONSOLE_PORT", console.get("port", 8096))),
+        bench_host=_env("BBIOT_BENCH_HOST", bench.get("host", "localhost")),
+        bench_plain_port=int(_env("BBIOT_BENCH_PLAIN_PORT", bench.get("plain_port", 1885))),
+        bench_tls_port=int(_env("BBIOT_BENCH_TLS_PORT", bench.get("tls_port", 8887))),
     )

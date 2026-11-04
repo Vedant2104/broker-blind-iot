@@ -1,9 +1,5 @@
-"""bbiot — every action in the system is a command here.
-
-Working: tls init, doctor, status, send, spy, attack read/modify/replay/redirect/drop,
-demo reset, and the runners (device/proxy/dashboard run). The remaining commands
-take their final arguments and say which phase implements them.
-"""
+"""bbiot — every action in the system is a command here (the dashboard runs the
+same code). `bbiot --help` lists them all."""
 
 from __future__ import annotations
 
@@ -77,11 +73,6 @@ def _cfg() -> Config:
 
 def _emit(line: str) -> None:
     print(line, flush=True)
-
-
-def _todo(phase: int, what: str) -> None:
-    log.info(f"'{what}' is not implemented yet (planned for phase {phase})")
-    raise typer.Exit(code=2)
 
 
 def _check_device(cfg: Config, device: str) -> None:
@@ -510,8 +501,37 @@ def keys() -> None:
 
 @bench_app.command("quick")
 def bench_quick() -> None:
-    """Run a quick benchmark."""
-    _todo(8, "bench quick")
+    """About a minute: crypto, message cost, groups of 10/100, one drop (bench/results/quick)."""
+    from bench.run import QUICK, run
+
+    run(_cfg(), _emit, QUICK, identity=actions.IDENTITY)
+
+
+@bench_app.command("full")
+def bench_full() -> None:
+    """The report numbers: groups up to 1000, more samples, charts (bench/results).
+
+    Decentralized (MLS) needs the bbiot-mls binary: docker compose run --rm cli bench full
+    """
+    from bench.run import FULL, run
+
+    run(_cfg(), _emit, FULL, identity=actions.IDENTITY)
+
+
+@bench_app.command("crypto")
+def bench_crypto(n: int = typer.Option(5000, help="Repetitions per operation.")) -> None:
+    """Crypto timings only. Run this on the Raspberry Pi too (no broker needed)."""
+    from bench import crypto
+
+    crypto.run(_emit, n)
+
+
+@bench_app.command("charts")
+def bench_charts() -> None:
+    """Redraw the PNG charts from the CSVs in bench/results (needs matplotlib)."""
+    from bench import charts
+
+    charts.render(_emit)
 
 
 # --- demo / runners -----------------------------------------------------------------------

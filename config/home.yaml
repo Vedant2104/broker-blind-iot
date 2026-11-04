@@ -45,6 +45,14 @@ admin_console:
   host: localhost
   port: 8096
 
+# Benchmark-only Mosquitto (bench/): a plain listener and an mTLS listener, so
+# "plain MQTT vs TLS only vs ours" go through the same broker. No device uses it;
+# the plain listener only allows topics under bench/.
+bench_broker:
+  host: localhost
+  plain_port: 1885
+  tls_port: 8887
+
 # Each device process exposes a small simulator control API on its port
 # (state, events, "send"). Localhost only; it is demo harness, not protocol.
 devices:

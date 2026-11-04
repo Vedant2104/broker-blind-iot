@@ -63,7 +63,8 @@ def test_send_rejects_unknown_topic(cfg: Config) -> None:
     assert "unknown topic" in result.output
 
 
-def test_unimplemented_command_says_which_phase(cfg: Config) -> None:
-    result = runner.invoke(app, ["bench", "quick"])
-    assert result.exit_code == 2
-    assert "phase 8" in result.output
+def test_bench_commands_exist() -> None:
+    result = runner.invoke(app, ["bench", "--help"])
+    assert result.exit_code == 0
+    for cmd in ("quick", "full", "crypto", "charts"):
+        assert cmd in result.output

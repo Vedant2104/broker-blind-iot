@@ -33,6 +33,7 @@ SERVERS: dict[str, tuple[str, ...]] = {
     "translog": ("translog", "localhost"),
     "hub": ("hub", "localhost"),  # the policy gateway every client connects to
     "admin-console": ("admin-console", "localhost"),  # admins' signing station
+    "bench-broker": ("bench-broker", "localhost"),  # benchmark-only Mosquitto
 }
 VALIDITY_DAYS = 365
 
@@ -202,7 +203,8 @@ def init_tls(
         paths = client_paths(tls_dir, name)
         if force or not paths.cert.exists() or (server and not _is_server_cert(paths.cert)):
             key, cert = issue_cert(ca_key, ca_cert, name, server=server, dns_names=names)
-            uid = broker_key_uid if name == "broker" else None
+            # both Mosquitto containers run as a non-root user that must read the key
+            uid = broker_key_uid if name in ("broker", "bench-broker") else None
             _write_key(paths.key, key, owner_uid=uid)
             _write_cert(paths.cert, cert)
             _write_cert(paths.ca, ca_cert)

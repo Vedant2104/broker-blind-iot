@@ -28,6 +28,9 @@ x-env: &env
   BBIOT_TRANSLOG_HOST: translog
   BBIOT_KDC_HOST: kdc
   BBIOT_ADMIN_CONSOLE_HOST: admin-console
+  BBIOT_BENCH_HOST: bench-broker
+  BBIOT_BENCH_PLAIN_PORT: "1883"
+  BBIOT_BENCH_TLS_PORT: "8883"
   BBIOT_DEVICE_HOST: service
   BBIOT_CONTROL_BIND: 0.0.0.0
 
@@ -256,6 +259,18 @@ services:
       - ./secrets/tls/identities/garage-lock:/app/secrets/tls/identities/garage-lock:ro
       - ./secrets/devices/garage-lock:/app/secrets/devices/garage-lock
 
+  # Benchmark-only Mosquitto (bench/): a plain listener and an mTLS listener, both
+  # limited to bench/ topics. No device connects to it.
+  bench-broker:
+    image: eclipse-mosquitto:2.0.20
+    depends_on:
+      tls-init: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:1885:1883", "127.0.0.1:8887:8883"]
+    command: ["mosquitto", "-c", "/etc/bbiot/mosquitto.conf"]
+    volumes:
+      - ./broker/bench:/etc/bbiot:ro
+      - ./secrets/tls/identities/bench-broker:/certs:ro
+
   # The admins' signing station behind the dashboard's Approve buttons. Holds the
   # offline keys (read-only); serves mutual TLS and answers only the dashboard and
   # cli identities. `docker compose stop admin-console` takes the keys offline again.
@@ -290,6 +305,8 @@ services:
       - ./secrets/tls/identities/dashboard:/app/secrets/tls/identities/dashboard:ro
       # attack 8 demo: the counterfeit device's (transport-only) identity
       - ./secrets/tls/identities/counterfeit:/app/secrets/tls/identities/counterfeit:ro
+      # benchmark results (Benchmarks page; "Run quick benchmark" writes quick/)
+      - ./bench/results:/app/bench/results
 
   # The admin's machine: `docker compose run --rm cli <command>`.
   cli:
@@ -301,6 +318,7 @@ services:
     volumes:
       - ./secrets:/app/secrets
       - ./offline:/app/offline
+      - ./bench/results:/app/bench/results
 
   # Plain mosquitto_pub / mosquitto_sub with a client cert, e.g.:
   #   docker compose run --rm mqtt-tools mosquitto_sub -h broker -p 8883 \

@@ -37,7 +37,7 @@ COPY dashboard dashboard
 COPY bench bench
 COPY evilbroker evilbroker
 COPY kdc kdc
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[bench]"
 
 COPY config config
 COPY --from=web /web/dist /app/dashboard/web/dist

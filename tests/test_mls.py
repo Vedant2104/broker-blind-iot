@@ -296,3 +296,14 @@ def test_rejoin_request_comes_with_a_fresh_key_package(home: Home) -> None:
     home.g["phone"]._added_at.clear()  # (skip the admin's 8-second grace in this test)
     g.request_rejoin(force=True)  # asks again — with a fresh key package this time
     assert g.current() == home.g["phone"].current()
+
+
+def test_benchmark_decentralized_ops() -> None:
+    """bench/groups.py drives real OpenMLS commits: one commit per op, a welcome on join."""
+    from bench import groups
+
+    rows = {r["op"]: r for r in groups.decentralized(6, reps=1, emit=lambda _l: None)}
+    assert set(rows) == {"join", "revoke", "rekey"}
+    assert rows["rekey"]["messages"] == 1 and rows["revoke"]["messages"] == 1
+    assert rows["join"]["messages"] == 2  # commit + welcome
+    assert all(r["bytes"] > 0 and r["member_ms"] > 0 for r in rows.values())

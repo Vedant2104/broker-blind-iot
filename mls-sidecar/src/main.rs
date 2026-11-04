@@ -212,6 +212,23 @@ impl State {
                 Ok(out)
             }
 
+            // Rekey without a membership change: a self-update commit gives the
+            // group fresh secrets (new epoch). Used by the benchmarks.
+            "update" => {
+                let signer = self.signer.take().ok_or_else(|| anyhow!("not initialised"))?;
+                let provider = &self.provider;
+                let result = (|| -> Result<String> {
+                    let g = self.group.as_mut().ok_or_else(|| anyhow!("not in a group"))?;
+                    let bundle = g.self_update(provider, &signer, LeafNodeParameters::default())?;
+                    g.merge_pending_commit(provider)?;
+                    ser(bundle.commit())
+                })();
+                self.signer = Some(signer);
+                let mut out = self.members_json()?;
+                out["commit"] = json!(result?);
+                Ok(out)
+            }
+
             "welcome" => {
                 let welcome = match parse_msg(&hex_arg(req, "welcome")?)? {
                     MlsMessageBodyIn::Welcome(w) => w,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -32,7 +34,7 @@ def test_bad_params_422(client: TestClient, setpoint) -> None:
 
 
 def test_allowlist_is_fixed() -> None:
-    groups = {"phone", "attack", "demo", "log", "security", "keymode", "pair", "admin"}
+    groups = {"phone", "attack", "demo", "log", "security", "keymode", "pair", "admin", "bench"}
     assert all(name.split(".")[0] in groups for name in dash.ACTIONS)
 
 
@@ -188,3 +190,19 @@ def test_mode_changes_are_pushed(client: TestClient) -> None:
     live.push_modes()
     modes = [m for m in seen if m["type"] == "modes"]
     assert [m["security"] for m in modes] == ["off", "on"]
+
+
+def test_bench_results_api(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bench import common
+
+    monkeypatch.setenv("BBIOT_BENCH_DIR", str(tmp_path))
+    common.write_csv(tmp_path / "groups.csv", [{"mode": "centralized", "size": 10, "op": "rekey"}])
+    common.write_csv(
+        tmp_path / "crypto-x86_64.csv", [{"op": "Ed25519 sign (64 B)", "median_us": 40}]
+    )
+    data = client.get("/api/bench").json()
+    assert data["full"]["groups"][0]["op"] == "rekey"
+    assert data["full"]["crypto"]["x86_64"][0]["median_us"] == "40"
+    assert data["quick"]["groups"] == []

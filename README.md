@@ -18,8 +18,8 @@ command, and the overhead is measured.
 | 5 | Decentralized group keys (MLS via OpenMLS sidecar), attacks 9–10 | ✅ done |
 | 6 | Hub, heartbeats, acks, MUD policy, quarantine, attacks 5/7/8 | ✅ done |
 | 7 | Full dashboard: Attack Console, Terminal, Keys & Trust, Pairing; `demo-tmux.sh` | ✅ done |
-| 8 | Benchmarks | next |
-| 9 | Polish | |
+| 8 | Benchmarks: per-message cost, crypto timings, groups 10/100/1000 KDC vs MLS, drop detection | ✅ done |
+| 9 | Polish | next |
 
 ## Architecture
 
@@ -151,7 +151,7 @@ rootca/      offline root CA (root.py), 2-of-3 admin approvals (approvals.py),
 kdc/         Key Distribution Center (centralized group keys)
 mls-sidecar/ Rust MLS sidecar on OpenMLS (decentralized group keys)
 dashboard/   FastAPI backend (app.py) + React frontend (web/)
-bench/       benchmarks, CSVs, charts                                  (phase 8)
+bench/       benchmarks (bench/*.py), results CSVs + charts (bench/results/)
 broker/      Mosquitto config (stock, mTLS only)
 config/      home.yaml: the fixed device and topic list
 tests/       pytest suite
@@ -306,6 +306,33 @@ docker compose run --rm mqtt-tools mosquitto_pub -h evil-broker -p 8883 \
 On Windows Git Bash, prefix these with `MSYS_NO_PATHCONV=1` so `/certs/...` isn't
 rewritten to a Windows path.
 
+## Benchmarks
+
+```sh
+uv run bbiot bench quick                     # ~10 s: crypto, message cost, groups 10/100, 1 drop
+docker compose run --rm cli bench full       # report numbers: groups up to 1000 incl. MLS, charts
+uv run bbiot bench crypto                    # crypto timings only — run this on the Raspberry Pi
+uv run bbiot bench charts                    # redraw PNGs from the CSVs (matplotlib)
+```
+
+`bench full` runs inside the image because decentralized (MLS) needs the OpenMLS
+sidecar; on the host, MLS rows are skipped with a note. Results go to
+`bench/results/` (full) and `bench/results/quick/` (latest quick run, git-ignored);
+the dashboard's Benchmarks page draws both and has a "Run quick benchmark" button.
+
+| File | What | How |
+|---|---|---|
+| `message_bytes.csv` | bytes per message: plain MQTT vs TLS only vs ours, state update and signed command | real payloads; MQTT PUBLISH size computed exactly; TLS record overhead for the negotiated version (TLS 1.3: 22 B) |
+| `message_latency.csv` | publish → received, median / p95 | through a separate benchmark Mosquitto (plain + mTLS listeners), one message in flight; "ours" includes sealing and every receive check |
+| `crypto-<machine>.csv` | µs per primitive (Ed25519, X25519, HKDF, AES-GCM, ChaCha20) and per full seal / open / KDC handshake | `perf_counter_ns`, median / p95 |
+| `groups.csv` | join / revoke / rekey at 10, 100, 1000 members: time at the KDC or MLS admin, time for one member, messages and bytes published | simulated members; the real `Kdc.rekey()` and real OpenMLS commits (sidecar `update` = rekey without membership change) |
+| `drop_detection.csv` | seconds until the hub alerts on a dropped smoke alarm, and which check caught it | runs attack 5 against the live home (security ON) |
+| `charts/*.png` | the same data as charts for the report | matplotlib |
+
+Raspberry Pi: copy the repo, `pip install .`, run `bbiot bench crypto`, and put the
+resulting `crypto-aarch64.csv` in `bench/results/` — the dashboard adds it as a column.
+Not measured yet in this repo.
+
 ## Ports (all bound to 127.0.0.1)
 
 | Port | Service |
@@ -321,6 +348,7 @@ rewritten to a Windows path.
 | 8101–8106 | device simulator APIs (front-door, back-door, thermostat, smoke-kitchen, phone, garage-lock) |
 | 8000 | dashboard |
 | 8096 | admin console (HTTPS, mutual TLS; dashboard / cli identities only) |
+| 1885 / 8887 | benchmark-only Mosquitto: plain / mTLS listeners, `bench/` topics only |
 
 ## Tests
 
