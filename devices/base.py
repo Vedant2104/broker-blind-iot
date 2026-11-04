@@ -314,7 +314,30 @@ class DeviceBase:
         self.connected = False
         self.log.info("disconnected from broker, retrying")
 
+    def own_echo(self, payload: bytes) -> bool:
+        """MQTT delivers our own publishes back when we subscribe to a matching
+        topic (e.g. the hub's own ack on ack/+). We never need to verify ourselves.
+        A broker forging our id in a header only gets the message dropped, which it
+        could do anyway."""
+        if payload[:1] != b"\x01":  # not a sealed message
+            return False
+        header = peek_header(payload)
+        return header is not None and header.sender == self.dev.id
+
+    def _on_mqtt_message(self, c: mqtt.Client, u: Any, msg: mqtt.MQTTMessage) -> None:
+        """paho callback. An exception here would kill paho's network thread: the device
+        would look connected but never receive again. Log it and keep going."""
+        try:
+            self._on_message(c, u, msg)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            self.log.info(f"✗ error handling a message on {msg.topic}: {type(exc).__name__}: {exc}")
+            self.events.add(
+                "rejected", topic=msg.topic, size=len(msg.payload), reason="internal error"
+            )
+
     def _on_message(self, _c: mqtt.Client, _u: Any, msg: mqtt.MQTTMessage) -> None:
+        if self.own_echo(msg.payload):
+            return
         if msg.topic.startswith("kdc/"):
             self.group.handle(msg.topic, msg.payload)
             return
@@ -365,7 +388,7 @@ class DeviceBase:
         client = make_client(self.cfg, self.dev.id)
         client.on_connect = self._on_connect
         client.on_disconnect = self._on_disconnect
-        client.on_message = self._on_message
+        client.on_message = self._on_mqtt_message
         client.reconnect_delay_set(1, 5)
         client.connect_async(self.cfg.broker_host, self.cfg.broker_port, keepalive=20)
         client.loop_start()

@@ -29,6 +29,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 
 from securelib.log import get_logger
 from securelib.pki import raw_public
+from securelib.services import ServiceError
 
 EXPORT_LABEL = "bbiot-group-key-v1"
 COMMIT_TOPIC = "mls/commit"
@@ -244,6 +245,8 @@ class DecentralizedGroupKeys:
             elif topic.startswith(REJOIN_TOPIC + "/") and self.is_admin:
                 self._on_rejoin(topic.rsplit("/", 1)[1], msg)
         except MlsError as exc:
+            self.log.info(f"✗ MLS {topic}: {exc}")
+        except ServiceError as exc:  # directory slow or down: retried on the next request
             self.log.info(f"✗ MLS {topic}: {exc}")
 
     def _on_welcome(self, msg: dict) -> None:

@@ -51,6 +51,8 @@ class Hub(DeviceBase):
     # --- liveness ----------------------------------------------------------------------------
 
     def _on_message(self, c: mqtt.Client, u: Any, msg: mqtt.MQTTMessage) -> None:
+        if self.own_echo(msg.payload):
+            return  # e.g. our own alarm ack on ack/hub
         if self.channel.mode == "on" and msg.topic.startswith(("home/", "hb/", "ack/")):
             h = peek_header(msg.payload) if msg.payload[:1] == b"\x01" else None
             if h is not None:

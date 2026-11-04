@@ -86,3 +86,73 @@ def test_validate_send_accepts_known_commands(cfg: Config) -> None:
 def test_validate_send_rejects(cfg: Config, topic, cmd, args, msg) -> None:
     with pytest.raises(SendError, match=msg):
         validate_send(cfg, topic, cmd, args)
+
+
+class _StaticGroup:
+    """One fixed group key (epoch 1), enough to seal test messages."""
+
+    mode = "centralized"
+
+    def current(self):
+        return 1, bytes(32)
+
+    def key_for(self, epoch: int):
+        return bytes(32) if epoch == 1 else None
+
+    def subscriptions(self):
+        return []
+
+    def handle(self, topic, payload) -> None:
+        pass
+
+    def tick(self) -> None:
+        pass
+
+    def status(self):
+        return {"mode": self.mode, "epoch": 1}
+
+
+def _hub_and_sealer(cfg: Config, sender: str):
+    from securelib.channel import Channel
+
+    hub = build(cfg, "hub", mode="on")
+    group = _StaticGroup()
+    hub.channel.groups["centralized"] = group
+    return hub, Channel(sender, mode="on", group=group)
+
+
+def test_own_echo_is_ignored_not_rejected(cfg: Config) -> None:
+    """MQTT echoes our own publishes (the hub's alarm ack on ack/+): no
+    'unknown sender' rejection for ourselves."""
+    hub, sealer = _hub_and_sealer(cfg, "hub")
+    mark = hub.events.last_id
+    payload = sealer.seal("ack/hub", {"ack": "alarm"})
+    assert hub.own_echo(payload)
+    hub._on_message(None, None, type("M", (), {"topic": "ack/hub", "payload": payload})())
+    assert hub.events.after(mark) == []
+
+
+def test_other_unknown_sender_still_rejected(cfg: Config) -> None:
+    hub, sealer = _hub_and_sealer(cfg, "intruder")
+    payload = sealer.seal("ack/hub", {"ack": "alarm"})
+    assert not hub.own_echo(payload)
+    hub._on_message(None, None, type("M", (), {"topic": "ack/hub", "payload": payload})())
+    last = hub.events.after(0)[-1]
+    assert last["kind"] == "rejected"  # still verified (and refused), not skipped
+
+
+def test_handler_error_does_not_kill_the_mqtt_thread(
+    cfg: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing handler (e.g. the directory timing out) must not escape to paho:
+    that would silently stop the device from receiving anything."""
+    door = build(cfg, "front-door", mode="off")
+
+    def boom(*_a):
+        raise RuntimeError("directory unreachable: read timed out")
+
+    monkeypatch.setattr(door, "_on_message", boom)
+    msg = type("M", (), {"topic": "home/door/front/cmd", "payload": b"{}"})()
+    door._on_mqtt_message(None, None, msg)  # does not raise
+    ev = door.events.after(0)[-1]
+    assert ev["kind"] == "rejected" and ev["reason"] == "internal error"
